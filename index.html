@@ -610,7 +610,7 @@ const PADRAO = {
 PADRAO.triagem=[['Possível soltura antes da AIJ','#0ca30c'],['Avaliar excesso de prazo','#d03b3b'],['Avaliar cautelares diversas (art. 319)','#1baf7a'],['Avaliar prisão domiciliar (art. 318)','#6a4fc7'],['Prioridade','#eb6834']];
 const LNOME={loc:'Localização',status:'Status',cump:'Cumprimento',reinc:'Reincidência',etiquetas:'Etiquetas',triagem:'Triagem'};
 const AJ0={limLar:7,limAma:30,alertaDias:30,agendaDias:30,parDias:30,prazoSent:10,backupDias:7,resumoAoAbrir:true,pjeUrl:'',prazos:{ns:90,pron:90,gar:90,menor:45},vara:'2ª Vara',comarca:'Afonso Cláudio',uf:'ES',juiz:'',modoPadrao:'cards'};
-const ACL0={exigirSenha:true,contasPeloAdmin:true,logins:[
+const ACL0={exigirSenha:true,contasPeloAdmin:false,logins:[
   {u:'klpizzol',nome:'Keomas Leali Pizzol',apelido:'Keomas',perfil:'admin',por:'sistema',em:'2026-09-22'}]};
 const CHKS=[['reu','Réu requisitado / videoconferência agendada'],['defesa','Defesa intimada'],['mp','Ministério Público intimado'],['vitima','Vítima intimada'],['test','Testemunhas intimadas'],['laudos','Laudos juntados'],['escolta','Escolta / sala de videoconferência confirmada']];
 const TIPOS_PRISAO=['Preventiva','Flagrante convertido em preventiva','Temporária','Domiciliar','Internação provisória (ECA)'];
@@ -656,7 +656,7 @@ function migrar(db){
   db.config.tiposExtra = db.config.tiposExtra || [];
   db.acl = db.acl || JSON.parse(JSON.stringify(ACL0));
   db.acl.exigirSenha = true;
-  if(db.acl.contasPeloAdmin==null) db.acl.contasPeloAdmin=true;
+  if(db.acl.contasPeloAdmin==null) db.acl.contasPeloAdmin=false;
   db.acl.logins = db.acl.logins && db.acl.logins.length ? db.acl.logins : JSON.parse(JSON.stringify(ACL0.logins));
   ACL0.logins.forEach(a=>{ if(!db.acl.logins.some(x=>x.u===a.u)) db.acl.logins.push({...a}); });
   db.config.pessoas = db.config.pessoas || [{id:'klpizzol',nome:'Keomas Leali Pizzol',apelido:'Keomas',cargo:'Assessor',cor:'#2a78d6',admin:true,perfil:'admin'}];
@@ -1536,10 +1536,11 @@ function abrirCfg(tab){
     const b0=e.target.closest('[data-c]');
     const ct=e.target.closest('[data-cfgtab]'); if(ct){ abrirCfg(ct.dataset.cfgtab); return; }
     if(b0&&b0.dataset.c==='admconta'){ acl().contasPeloAdmin=b0.checked; salvar(); abrirCfg('autorizacoes');
-      toast(b0.checked?'As contas passam a ser criadas por você no Firebase.':'Voltou para códigos de convite — lembre de reativar o autocadastro no Firebase.'); return; }
+      toast(b0.checked?'As contas passam a ser criadas por você no Firebase (desligue o autocadastro lá).':'Contas por código de convite — o autocadastro precisa estar ligado no Firebase.'); return; }
     if(b0&&b0.dataset.c==='alcopia'){ try{ await navigator.clipboard.writeText(b0.dataset.u+'@'+dominio()); toast('E-mail técnico copiado.'); }catch(e){} return; }
     if(b0&&b0.dataset.c==='aladd'){ const u=norm(box.querySelector('#alU').value).toLowerCase().replace(/[^a-z0-9._-]/g,''), n=box.querySelector('#alN').value.trim();
       if(!u){ toast('Informe o login.'); return; } if(aclUser(u)){ toast('Esse login já está autorizado.'); return; }
+      if(!SYNC.on&&syncCfg()&&syncCfg().projectId){ toast('Conecte o painel ao banco antes de autorizar — a liberação precisa subir para o Firebase.'); return; }
       acl().logins.push({u,nome:n||u,apelido:(n||u).split(' ')[0],perfil:box.querySelector('#alP').value,por:nomeP(EU),em:hojeISO()});
       garantirPessoa(u); salvar();
       if(syncCfg()&&syncCfg().projectId){ await gerarConviteUI(u); } else { toast(`Login “${u}” autorizado.`); abrirCfg('autorizacoes'); }
@@ -1558,7 +1559,7 @@ function abrirCfg(tab){
     if(b0&&b0.dataset.c==='sycopy'){ const c=syncCfg(); if(!c||!c.projectId){ toast('Ainda não há configuração salva neste painel.'); return; }
       try{ await navigator.clipboard.writeText(JSON.stringify(c,null,1)); toast('Configuração copiada — cole no outro painel em Ajustes → Sincronização.'); }
       catch(e){ const ta=box.querySelector('#fbCfg'); if(ta){ ta.focus(); ta.select(); } toast('Selecione o texto da caixa e copie com Ctrl+C.'); } return; }
-    if(b0&&b0.dataset.c==='sysql'){ try{ await navigator.clipboard.writeText(regrasFirestore()); toast('Regras copiadas — cole em Firestore Database → Regras e clique em Publicar.'); }catch(e){ toast('Selecione o texto e copie.'); } return; }
+    if(b0&&b0.dataset.c==='sysql'){ try{ await navigator.clipboard.writeText(regrasFirestore()); toast('Regras copiadas — cole em Firestore Database → Regras e clique em Publicar. É só uma vez.'); }catch(e){ toast('Selecione o texto e copie.'); } return; }
     if(b0&&b0.dataset.c==='stdel'){ const row=b0.closest('[data-st]'); DB.config[row.dataset.st].splice(+row.dataset.i,1); salvar(); abrirCfg(tab); return; }
     if(b0&&b0.dataset.c==='stadd'){ const k=b0.dataset.l, inp=box.querySelector(`[data-stnew="${k}"]`); if(inp.value.trim()){ DB.config[k].push(inp.value.trim()); salvar(); abrirCfg(tab); } return; }
     if(b0&&b0.dataset.c==='cidel'){ DB.config.checkItens.splice(+b0.closest('[data-ci]').dataset.ci,1); salvar(); abrirCfg(tab); return; }
@@ -2563,6 +2564,7 @@ function aplicarLinhas(rows,inicial){
     if(id==='config'&&d){ DB.config=d; SB[id]=s; mudou=true; }
     else if(id==='acl'&&d){ DB.acl=d; SB[id]=s; mudou=true; }
     else if(id==='lixeira'&&d){ DB.lixeira=d.itens||[]; SB[id]=s; mudou=true; }
+    else if(id==='autorizados'){ SB[id]=s; }   /* lista derivada da ACL — só serve para as regras do Firestore */
     else if(id==='avisos'&&d){ DB.avisos=DB.avisos||[];
       (d.itens||[]).forEach(a=>{ const ex=DB.avisos.find(x=>x.id===a.id);
         if(!ex){ DB.avisos.push(a); mudou=true; } else if(a.lido&&!ex.lido){ ex.lido=true; mudou=true; } });
@@ -2594,7 +2596,7 @@ async function empurrar(){
     const põe=(id,data)=>{ const s=JSON.stringify(data); if(SB[id]===s) return; SB[id]=s; ops.push([docId(id),{d:data,por:EU,em:new Date().toISOString()}]); };
     DB.registros.forEach(r=>põe('r_'+r.id,r));
     Object.keys(SB).forEach(id=>{ if(id.startsWith('r_')&&!byId(id.slice(2))){ delete SB[id]; del.push(docId(id)); } });
-    põe('config',DB.config); põe('acl',DB.acl); põe('lixeira',{itens:DB.lixeira}); põe('avisos',{itens:(DB.avisos||[]).slice(-500)});
+    põe('config',DB.config); põe('acl',DB.acl); põe('lixeira',{itens:DB.lixeira}); põe('avisos',{itens:(DB.avisos||[]).slice(-500)}); põe('autorizados',{emails:acl().logins.map(a=>emailDe(a.u))});
     DB.chat.slice(-400).forEach(m=>põe('chat_'+m.id,m));
     Object.keys(SB).forEach(id=>{ if(id.startsWith('chat_')&&!DB.chat.some(m=>m.id===id.slice(5))){ delete SB[id]; del.push(docId(id)); } });
     const porMes={}; DB.log.slice(-1500).forEach(e=>{ (porMes[mesLog(e)]=porMes[mesLog(e)]||[]).push(e); });
@@ -2624,12 +2626,12 @@ function cfgSyncHTML(){
     <textarea id="fbCfg" style="min-height:130px;font-family:ui-monospace,Consolas,monospace;font-size:12px" placeholder='const firebaseConfig = {\n  apiKey: "AIza...",\n  authDomain: "seu-projeto.firebaseapp.com",\n  projectId: "seu-projeto",\n  appId: "1:123...:web:abc..."\n};'>${c.projectId?esc(JSON.stringify(c,null,1)):''}</textarea></div>
   <div class="acts" style="margin-top:10px"><button class="btn pri" data-c="syok">Salvar e conectar</button><button class="btn" data-c="sycopy" title="Copiar para colar em outro painel">⧉ Copiar configuração</button><button class="btn" data-c="sydesc">Desconectar</button><span id="syMsg" class="cnt"></span></div>
   <div class="cfgsec" style="margin-top:14px"><h4>Regras do Firestore (cole em Firestore Database → Regras)</h4>
-    <div class="hint" style="margin-bottom:6px">Esta regra libera <b>somente os logins autorizados</b>. Sempre que você autorizar ou remover alguém em <b>Autorizações</b>, volte aqui, copie de novo e publique no Firebase — senão a pessoa nova não enxerga nada.</div>
+    <div class="note" style="background:var(--good-soft);margin-bottom:8px">Cole isto <b>uma única vez</b>. A partir daí, quem manda é a lista de <b>⚙ Ajustes → Autorizações</b>: autorizou alguém no painel, a pessoa entra. Não precisa mexer no Firebase de novo.</div>
     <textarea readonly id="fbRegras" style="min-height:250px;font-family:ui-monospace,Consolas,monospace;font-size:12px">${esc(regrasFirestore())}</textarea>
     <button class="btn sm" data-c="sysql" style="margin-top:6px">⧉ Copiar regras</button>
     <div class="hint" style="margin-top:6px">No Firebase, ative <b>Authentication → Sign-in method → E-mail/senha</b>. Cada pessoa entra com o login do TJES e uma senha; por baixo, o painel usa o e-mail técnico <b>login@${esc(dominio())}</b>, que não precisa existir de verdade.</div>
     <div class="fld" style="margin-top:10px;max-width:320px"><label>Domínio técnico das contas</label><input id="fbDom" value="${esc((syncCfg()||{}).dominio||DOM_PADRAO)}"></div></div>
-  <div class="note" style="margin-top:12px;background:var(--warn-soft)">⚠ A configuração do Firebase fica dentro da página publicada — isso é normal e inevitável em qualquer site com Firebase. Quem protege os dados são as <b>regras acima</b> (lista fixa de logins) e o <b>autocadastro desligado</b> no Firebase (Authentication → Settings → User actions → desmarcar “Enable create (sign-up)”). Com as duas coisas, quem tiver o endereço não lê nada. Ainda assim, trate o link como confidencial e, para uso definitivo, avalie hospedar dentro da estrutura do TJES.</div>
+  <div class="note" style="margin-top:12px;background:var(--warn-soft)">⚠ A configuração do Firebase fica dentro da página publicada — isso é normal e inevitável em qualquer site com Firebase. Quem protege os dados são as <b>regras acima</b>: só quem está em <b>Autorizações</b> lê ou grava alguma coisa. Uma conta criada por fora existe, mas não enxerga nada. Ainda assim, trate o link como confidencial, use senhas fortes e, para uso definitivo, avalie hospedar dentro da estrutura do TJES.</div>
   <div class="cfgsec" style="margin-top:12px"><h4>Publicar para a equipe</h4><div class="hint">Depois de conectar, use <b>Ferramentas → Baixar painel atualizado</b>: o arquivo baixado já sai com esta configuração embutida. Renomeie para <b>index.html</b> e envie ao GitHub Pages — quem abrir o site já cai direto na tela de login, conectado ao banco.</div></div>`;
 }
 
@@ -2638,12 +2640,9 @@ function cfgAutorizacoesHTML(){
   const nuvem=!!(syncCfg()&&syncCfg().projectId);
   const adm=!!A.contasPeloAdmin;
   return `<div class="note">Qualquer pessoa autorizada pode liberar novos logins. O login é o mesmo usuário do TJES (sem e-mail).${(nuvem&&!adm)?' Ao autorizar, o painel gera um <b>código de convite</b>: só com esse código a pessoa cria a própria senha, na opção “Primeiro acesso” da tela de entrada.':''}</div>
-  ${nuvem?`<div class="note" style="background:var(--warn-soft)"><b>Liberar alguém tem ${adm?'três':'duas'} etapas</b> — só autorizar aqui não basta:
-    <br>1. autorize o login abaixo;
-    ${adm?`<br>2. crie a conta no Firebase: <b>Authentication → Users → Add user</b>, com o e-mail técnico <b>login@${esc(dominio())}</b> e uma senha provisória (a pessoa troca depois no menu do nome dela);`
-         :`<br>2. gere o <b>🎟 convite</b> e entregue o código à pessoa;`}
-    <br>${adm?'3':'2'}. em <b>⚙ Ajustes → Sincronização</b>, copie as regras do Firestore já atualizadas e publique no Firebase.</div>`:''}
-  <label class="chk" style="margin-bottom:10px"><input type="checkbox" data-c="admconta" ${adm?'checked':''}> Contas criadas somente pelo administrador no Firebase <span class="cnt">(recomendado — desmarque só se voltar a usar códigos de convite)</span></label>
+  ${nuvem?(adm?`<div class="note" style="background:var(--warn-soft)"><b>Modo “contas criadas pelo administrador”.</b> Depois de autorizar o login abaixo, crie a conta no Firebase: <b>Authentication → Usuários → Adicionar usuário</b>, com o e-mail técnico <b>login@${esc(dominio())}</b> e uma senha provisória.</div>`
+    :`<div class="note" style="background:var(--good-soft)"><b>Liberar alguém são dois cliques, tudo aqui:</b> autorize o login abaixo e gere o <b>🎟 convite</b>. Com o código, a pessoa cria a própria senha em “Primeiro acesso” e já entra. <b>Não é preciso mexer no Firebase.</b></div>`):''}
+  <label class="chk" style="margin-bottom:10px"><input type="checkbox" data-c="admconta" ${adm?'checked':''}> Contas criadas somente pelo administrador no Firebase <span class="cnt">(mais restritivo; com a caixa desmarcada vale o código de convite)</span></label>
   ${nuvem?'<div class="note" style="background:var(--good-soft)">Este painel está em modo equipe: a senha é sempre exigida e conferida pelo Firebase.</div>':'<div class="note" style="background:var(--good-soft)">A senha é sempre exigida. Fora do modo equipe, cada pessoa define a sua no primeiro acesso, e ela vale só neste navegador.</div>'}
   ${A.logins.map((a,i)=>`<div class="cfgrow" data-al="${i}" style="grid-template-columns:1.1fr 1.4fr 1fr auto auto">
     <input type="text" value="${esc(a.u)}" data-af="u" ${a.u==='klpizzol'?'readonly':''}>
@@ -2659,19 +2658,26 @@ function cfgAutorizacoesHTML(){
 }
 
 /* ---------- convites: só quem já tem conta autoriza novas contas ---------- */
+function loginAdmin(){ const a=acl().logins.find(x=>x.perfil==='admin')||acl().logins[0]||{u:'klpizzol'}; return emailDe(a.u); }
 function regrasFirestore(){
-  const emails=acl().logins.map(a=>"             '"+norm(a.u).toLowerCase()+"@"+dominio()+"'").join(',\n');
   return `rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Só estes logins leem e gravam. Para incluir alguém, autorize no painel
-    // e cole aqui a regra atualizada.
+    // A lista de quem pode entrar é mantida pelo próprio painel, em
+    // painel/autorizados. Basta autorizar a pessoa em Ajustes -> Autorizações:
+    // estas regras não precisam ser alteradas de novo.
+
+    function listaAutorizados() {
+      return exists(/databases/$(database)/documents/painel/autorizados)
+        ? get(/databases/$(database)/documents/painel/autorizados).data.d.emails
+        : ['${loginAdmin()}'];
+    }
+
     function autorizado() {
       return request.auth != null
-        && request.auth.token.email in [
-${emails}
-           ];
+        && ( request.auth.token.email == '${loginAdmin()}'
+             || request.auth.token.email in listaAutorizados() );
     }
 
     match /painel/{doc} {
@@ -2679,13 +2685,17 @@ ${emails}
     }
 
     match /convites/{login} {
-      allow read, write: if autorizado();
+      // quem foi convidado consulta o próprio convite antes de ter conta;
+      // o convite guarda só uma versão embaralhada do código.
+      allow get: if true;
+      allow list, create, update, delete: if autorizado();
     }
   }
 }`;
 }
 function colConvites(){ const {fs}=SYNC.mod; return fs.collection(SYNC.db||fs.getFirestore(SYNC.dbApp),'convites'); }
-function codigoNovo(){ const s='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let c=''; for(let i=0;i<8;i++){ c+=s[Math.floor(Math.random()*s.length)]; if(i===3) c+='-'; } return c; }
+function codigoNovo(){ const s='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; const v=new Uint32Array(12); (crypto.getRandomValues?crypto.getRandomValues(v):v.forEach((x,i)=>v[i]=Math.random()*4294967295));
+  let c=''; for(let i=0;i<12;i++){ c+=s[v[i]%s.length]; if(i===3||i===7) c+='-'; } return c; }
 async function gravarConvite(login,codigo){
   await prepararFirebase(); const {fs}=SYNC.mod;
   await fs.setDoc(fs.doc(colConvites(),norm(login).toLowerCase()),
@@ -2708,10 +2718,11 @@ async function criarConta(login,codigo,senha){
   if(await sha(codigo.trim().toUpperCase())!==cv.codigoHash) throw {code:'codigo-invalido'};
   const {auth}=SYNC.mod;
   await auth.createUserWithEmailAndPassword(SYNC.auth,emailDe(login),senha);
-  await marcarConviteUsado(login);
+  try{ await marcarConviteUsado(login); }catch(e){ console.warn('convite não pôde ser marcado como usado',e); }
 }
 async function gerarConviteUI(login){
   const cod=codigoNovo();
+  try{ await empurrar(); }catch(e){}
   try{ await gravarConvite(login,cod); }
   catch(e){ toast('Não consegui gravar o convite: '+msgFB(e)); return; }
   abrirDialogo(`<h3>🎟 Código de convite para <b>${esc(login)}</b></h3>
