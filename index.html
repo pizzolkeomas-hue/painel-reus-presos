@@ -1577,6 +1577,11 @@ function abrirCfg(tab){
       setSyncCfg(cfg); box.querySelector('#syMsg').textContent='conectando…';
       const ok=await iniciarSync(true); box.querySelector('#syMsg').textContent=ok?'✓ conectado — os dados deste painel foram enviados ao Firebase':'não conectou: '+SYNC.erro; return; }
     if(b0&&b0.dataset.c==='sydesc'){ setSyncCfg(null); SYNC.on=false; SYNC.erro=''; statusSync(); abrirCfg('sync'); toast('Sincronização desligada neste computador.'); return; }
+    if(b0&&b0.dataset.c==='fblp'){ const c=syncCfg()||{}; c.longPolling=b0.checked; setSyncCfg(c);
+      abrirDialogo(`<h3>Modo de conexão alterado</h3><div class="msub">A página precisa ser recarregada para valer. Suas alterações já estão salvas.</div>
+        <div class="mfoot"><button class="btn" id="lpN">Depois</button><button class="btn pri" id="lpR">Recarregar agora</button></div>`);
+      dlgBody.querySelector('#lpN').onclick=()=>dlg.close();
+      dlgBody.querySelector('#lpR').onclick=()=>location.reload(); return; }
     if(b0&&b0.dataset.c==='sydiag'){ dlg.onclose=null; await diagnosticoSync(); return; }
     if(b0&&b0.dataset.c==='sycopy'){ const c=syncCfg(); if(!c||!c.projectId){ toast('Ainda não há configuração salva neste painel.'); return; }
       try{ await navigator.clipboard.writeText(JSON.stringify(c,null,1)); toast('Configuração copiada — cole no outro painel em Ajustes → Sincronização.'); }
@@ -1778,7 +1783,10 @@ function auditar(){
   const E=(r,acao,det)=>({id:uid(),ts,usr:EU,rid:r.id,proc:procPrinc(r),acao,det:det||''});
   DB.registros.forEach(r=>{ const old=AUD_BASE[r.id];
     if(!old){ if(r._restaurado){ delete r._restaurado; ents.push(E(r,'Processo restaurado da lixeira',CATS[r.cat].nome)); } else ents.push(E(r,'Processo incluído',`em ${CATS[r.cat].nome}`)); r.movEm=hojeISO(); now[r.id]=JSON.stringify(r); return; }
-    if(old===now[r.id]) return; const ds=diffs(JSON.parse(old),r); ds.forEach(d=>ents.push(E(r,d[0],d[1]))); if(ds.length&&r.movEm!==hojeISO()){ r.movEm=hojeISO(); now[r.id]=JSON.stringify(r); } });
+    if(old===now[r.id]) return;
+    /* alterado aqui: fica pendente até o servidor confirmar, mesmo que o envio nem tenha começado */
+    if(typeof PEND!=='undefined' && SB['r_'+r.id]!==now[r.id]){ PEND.add('r_'+r.id); if(typeof salvarPend==='function') salvarPend(); }
+    const ds=diffs(JSON.parse(old),r); ds.forEach(d=>ents.push(E(r,d[0],d[1]))); if(ds.length&&r.movEm!==hojeISO()){ r.movEm=hojeISO(); now[r.id]=JSON.stringify(r); } });
   Object.keys(AUD_BASE).forEach(id=>{ if(!now[id]){ const a=JSON.parse(AUD_BASE[id]); ents.push(E(a,'Processo movido para a lixeira',`de ${CATS[a.cat].nome} — ${trunc(a.nome,80)}`)); } });
   AUD_BASE=now;
   if(ents.length){ ents.forEach(e=>{ LOGLAST[e.rid]=e; }); DB.log.push(...ents); if(DB.log.length>8000) DB.log.splice(0,DB.log.length-8000); gravar(); if(dlg.open&&dlgBody.querySelector('#logList')) renderLogList(); }
@@ -2141,9 +2149,11 @@ function renderSyncBar(){
   }
   if(SYNC.on && SYNC.erroPush){
     el.innerHTML=`<div class="bkbar crit">⚠ <b>${PEND.size} alteração(ões) ainda não foram para o banco da equipe.</b> ${esc(SYNC.erroPush)}
-      <span class="cnt">Elas estão guardadas aqui e o painel tenta de novo sozinho.</span>
-      <button class="btn sm pri" id="syRe">Tentar agora</button></div>`;
+      <span class="cnt">Elas ficam guardadas neste navegador, inclusive se você recarregar a página, e o painel tenta de novo sozinho.</span>
+      <button class="btn sm pri" id="syRe">Tentar agora</button><button class="btn sm" id="syDg">🩺 Diagnosticar</button><button class="btn sm ghost" id="syBk2">⬇ Backup</button></div>`;
     el.querySelector('#syRe').onclick=()=>{ empurrar(); toast('Enviando…'); };
+    el.querySelector('#syDg').onclick=()=>{ diagnosticoSync(); };
+    el.querySelector('#syBk2').onclick=baixarJSON;
     return;
   }
   if(SYNC.on){ el.innerHTML=''; return; }
@@ -2517,7 +2527,10 @@ function comPrazo(p,ms,msg){
     new Promise((_,rej)=>{ id=setTimeout(()=>rej(new Error(msg)),ms); })
   ]);
 }
+const PEND_KEY='painel-pendentes';
 const PEND=new Set();      /* documentos alterados aqui e ainda não confirmados pelo servidor */
+try{ (JSON.parse(localStorage.getItem(PEND_KEY)||'[]')||[]).forEach(x=>PEND.add(x)); }catch(e){}
+function salvarPend(){ try{ localStorage.setItem(PEND_KEY,JSON.stringify([...PEND].slice(-3000))); }catch(e){} }
 const SYNC={on:false,fs:null,db:null,col:null,erro:'',erroPush:'',aplicando:false,unsub:null,auth:null,mod:null,dbApp:null};
 const SB={};
 function cfgEmbutida(){ try{ const el=document.getElementById('syncCfgEmb'); const v=el&&JSON.parse(el.textContent||'null'); return (v&&v.projectId)?v:null; }catch(e){ return null; } }
@@ -2550,6 +2563,16 @@ async function prepararFirebase(){
   const [app,auth,fs]=await Promise.all([import(FB+'firebase-app.js'),import(FB+'firebase-auth.js'),import(FB+'firebase-firestore.js')]);
   const a=app.getApps&&app.getApps().length?app.getApps()[0]:app.initializeApp(c);
   SYNC.mod={app,auth,fs}; SYNC.auth=auth.getAuth(a); SYNC.dbApp=a;
+  /* Conexão tolerante a proxy: o padrão do Firestore usa streaming, que várias
+     redes corporativas cortam — as gravações ficam penduradas para sempre. */
+  try{
+    if(fs.initializeFirestore){
+      const o = (c.longPolling===false) ? {experimentalAutoDetectLongPolling:true,useFetchStreams:false}
+                                        : {experimentalForceLongPolling:true,useFetchStreams:false};
+      SYNC.db = fs.initializeFirestore(a,o);
+    }
+  }catch(e){ SYNC.db=null; }
+  if(!SYNC.db){ try{ SYNC.db=fs.getFirestore(a); }catch(e){} }
   try{ await auth.setPersistence(SYNC.auth,auth.browserLocalPersistence); }catch(e){}
   return SYNC;
 }
@@ -2633,7 +2656,7 @@ async function iniciarSync(mostrarErro){
     await prepararFirebase();
     const {fs}=SYNC.mod;
     if(!SYNC.auth.currentUser) throw new Error('Entre com o seu login do TJES para sincronizar.');
-    const db=fs.getFirestore(SYNC.dbApp);
+    const db=SYNC.db||fs.getFirestore(SYNC.dbApp);
     SYNC.fs=fs; SYNC.db=db; SYNC.col=fs.collection(db,'painel');
     const snap=await comPrazo(fs.getDocs(SYNC.col),15000,'A leitura do banco demorou demais. Verifique a internet ou a liberação da rede do TJES.');
     const linhas=[]; snap.forEach(d=>linhas.push({id:d.id,data:d.data().d}));
@@ -2653,6 +2676,7 @@ async function iniciarSync(mostrarErro){
     /* o envio vai em segundo plano e só manda o que mudou: recarregar a página
        não reescreve o banco inteiro nem segura a tela de login. */
     agendarPush();
+    if(PEND.size) setTimeout(()=>{ try{ renderSyncBar(); }catch(e){} },300);
     statusSync(); return true;
   }catch(e){ SYNC.on=false; SYNC.erro=msgFB(e); statusSync(); if(mostrarErro) toast('Não foi possível sincronizar: '+SYNC.erro); return false; }
 }
@@ -2745,7 +2769,7 @@ async function empurrar(){
   const fs=SYNC.fs;
   try{
     const ops=[], del=[];
-    const põe=(id,data)=>{ const s=JSON.stringify(data); if(SB[id]===s) return; SB[id]=s; PEND.add(id); ops.push([id,docId(id),{d:data,por:EU,em:new Date().toISOString()}]); };
+    const põe=(id,data)=>{ const s=JSON.stringify(data); if(SB[id]===s) return; SB[id]=s; PEND.add(id); salvarPend(); ops.push([id,docId(id),{d:data,por:EU,em:new Date().toISOString()}]); };
     DB.registros.forEach(r=>põe('r_'+r.id,r));
     Object.keys(SB).forEach(id=>{ if(id.startsWith('r_')&&!byId(id.slice(2))){ delete SB[id]; del.push(docId(id)); } });
     põe('config',DB.config); põe('acl',DB.acl); põe('lixeira',{itens:DB.lixeira}); põe('avisos',{itens:(DB.avisos||[]).slice(-500)}); põe('autorizados',{emails:acl().logins.map(a=>emailDe(a.u))});
@@ -2761,8 +2785,8 @@ async function empurrar(){
       const lote=ops.slice(i,i+10);
       const b=fs.writeBatch(SYNC.db||SYNC.col.firestore);
       lote.forEach(([,docid,body])=>b.set(fs.doc(SYNC.col,docid),body));
-      try{ await comPrazo(b.commit(),25000,'O envio das alterações demorou demais.'); lote.forEach(([id])=>PEND.delete(id)); }
-      catch(err){ lote.forEach(([id])=>{ delete SB[id]; }); throw err; }
+      try{ await comPrazo(b.commit(),25000,'O envio das alterações demorou demais — a rede pode estar bloqueando o Firestore. Tente ligar o “modo compatível” em Ajustes → Sincronização.'); lote.forEach(([id])=>PEND.delete(id)); salvarPend(); }
+      catch(err){ lote.forEach(([id])=>{ delete SB[id]; }); salvarPend(); throw err; }
     }
     for(const id of del) await comPrazo(fs.deleteDoc(fs.doc(SYNC.col,id)),20000,'Não consegui apagar um registro no banco.');
     SYNC.erro=''; SYNC.erroPush=''; statusSync(); if(typeof renderSyncBar==='function') try{ renderSyncBar(); }catch(_){}
@@ -2789,7 +2813,8 @@ function cfgSyncHTML(){
     <textarea readonly id="fbRegras" style="min-height:250px;font-family:ui-monospace,Consolas,monospace;font-size:12px">${esc(regrasFirestore())}</textarea>
     <button class="btn sm" data-c="sysql" style="margin-top:6px">⧉ Copiar regras</button>
     <div class="hint" style="margin-top:6px">No Firebase, ative <b>Authentication → Sign-in method → E-mail/senha</b>. Cada pessoa entra com o login do TJES e uma senha; por baixo, o painel usa o e-mail técnico <b>login@${esc(dominio())}</b>, que não precisa existir de verdade.</div>
-    <div class="fld" style="margin-top:10px;max-width:320px"><label>Domínio técnico das contas</label><input id="fbDom" value="${esc((syncCfg()||{}).dominio||DOM_PADRAO)}"></div></div>
+    <div class="fld" style="margin-top:10px;max-width:320px"><label>Domínio técnico das contas</label><input id="fbDom" value="${esc((syncCfg()||{}).dominio||DOM_PADRAO)}"></div>
+    <label class="chk" style="margin-top:10px"><input type="checkbox" data-c="fblp" ${(syncCfg()||{}).longPolling===false?'':'checked'}> Modo compatível com redes corporativas <span class="cnt">(recomendado na rede do TJES — usa conexão simples em vez de streaming, que muitos proxies cortam e deixam as gravações penduradas)</span></label></div>
   <div class="note" style="margin-top:12px;background:var(--warn-soft)">⚠ A configuração do Firebase fica dentro da página publicada — isso é normal e inevitável em qualquer site com Firebase. Quem protege os dados são as <b>regras acima</b>: só quem está em <b>Autorizações</b> lê ou grava alguma coisa. Uma conta criada por fora existe, mas não enxerga nada. Ainda assim, trate o link como confidencial, use senhas fortes e, para uso definitivo, avalie hospedar dentro da estrutura do TJES.</div>
   <div class="cfgsec" style="margin-top:12px"><h4>Publicar para a equipe</h4><div class="hint">Depois de conectar, use <b>Ferramentas → Baixar painel atualizado</b>: o arquivo baixado já sai com esta configuração embutida. Renomeie para <b>index.html</b> e envie ao GitHub Pages — quem abrir o site já cai direto na tela de login, conectado ao banco.</div></div>`;
 }
