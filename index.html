@@ -1543,9 +1543,14 @@ function abrirCfg(tab){
       if(!SYNC.on&&syncCfg()&&syncCfg().projectId){ toast('Conecte o painel ao banco antes de autorizar — a liberação precisa subir para o Firebase.'); return; }
       acl().logins.push({u,nome:n||u,apelido:(n||u).split(' ')[0],perfil:box.querySelector('#alP').value,por:nomeP(EU),em:hojeISO()});
       garantirPessoa(u); salvar();
-      if(syncCfg()&&syncCfg().projectId){ await gerarConviteUI(u); } else { toast(`Login “${u}” autorizado.`); abrirCfg('autorizacoes'); }
+      if(syncCfg()&&syncCfg().projectId){
+        try{ await empurrar(); }catch(e){}
+        dlg.onclose=null;
+        const feito=await criarContaUI(u,n);
+        if(!feito){ toast(`Login “${u}” autorizado. Falta criar a conta — use o botão 🔑 na linha dele.`); abrirCfg('autorizacoes'); }
+      } else { toast(`Login “${u}” autorizado.`); abrirCfg('autorizacoes'); }
       return; }
-    if(b0&&b0.dataset.c==='alconvite'){ await gerarConviteUI(b0.dataset.u); return; }
+    if(b0&&b0.dataset.c==='alconta'){ dlg.onclose=null; await criarContaUI(b0.dataset.u, (aclUser(b0.dataset.u)||{}).nome); return; }
     if(b0&&b0.dataset.c==='aldel'){ const i=+b0.closest('[data-al]').dataset.al, a=acl().logins[i];
       if(a.u===EU){ toast('Você não pode remover a sua própria autorização.'); return; }
       acl().logins.splice(i,1); salvar(); abrirCfg('autorizacoes'); toast(`Autorização de “${a.u}” removida.`); return; }
@@ -2405,11 +2410,10 @@ function telaLogin(msg,u0){
     ${msg?`<div class="note" style="background:var(--crit-soft);margin-bottom:10px">${esc(msg)}</div>`:''}
     ${aviso}
     <button class="btn pri" style="width:100%;justify-content:center" type="submit">Entrar</button>
-    ${(nuvem&&!acl().contasPeloAdmin)?'<button class="btn ghost" style="width:100%;justify-content:center;margin-top:8px" type="button" id="lkNovo">Primeiro acesso — criar minha senha com o código de convite</button>':''}
-    <div class="cnt" style="margin-top:12px">${nuvem?'Use o seu login do TJES e a senha do painel. A senha é criada no Firebase por quem administra e pode ser trocada no menu do seu nome.':'Só entram os logins autorizados. Qualquer pessoa autorizada pode liberar novos logins em Ajustes → Autorizações.'}</div></form>`;
+
+    <div class="cnt" style="margin-top:12px">${nuvem?'Use o seu login do TJES e a senha do painel. Quem administra o painel cria o seu acesso; você pode trocar a senha depois, no menu do seu nome.':'Só entram os logins autorizados. Qualquer pessoa autorizada pode liberar novos logins em Ajustes → Autorizações.'}</div></form>`;
   const f=document.getElementById('lkForm'), u=f.querySelector('#lkU');
   u.oninput=()=>{ const a=aclUser(u.value); f.querySelector('#lkSenhaBox').style.display=(nuvem||exigeSenha(a))?'':'none'; };
-  const bn=f.querySelector('#lkNovo'); if(bn) bn.onclick=()=>telaPrimeiroAcesso('',u.value.trim());
   const bc=f.querySelector('#lkConn'); if(bc) bc.onclick=()=>telaConectar('');
   f.onsubmit=async e=>{ e.preventDefault(); await entrar(u.value.trim(), f.querySelector('#lkS').value); };
 }
@@ -2504,7 +2508,7 @@ const FB='https://www.gstatic.com/firebasejs/10.12.5/';
 const DOM_PADRAO='painel-2vara.local';
 const dominio=()=>((syncCfg()||{}).dominio||DOM_PADRAO);
 const emailDe=u=>norm(u).toLowerCase()+'@'+dominio();
-const ERROS_FB={'auth/invalid-credential':'Login ou senha incorretos.','auth/wrong-password':'Senha incorreta.','auth/user-not-found':'Ainda não existe conta para este login. Se você recebeu um código de convite, use “Primeiro acesso”. Se não, peça a alguém da equipe para autorizar o seu login.','auth/invalid-email':'Login inválido — use só letras e números.','auth/too-many-requests':'Muitas tentativas. Aguarde alguns minutos e tente de novo.','auth/network-request-failed':'Sem conexão com o Firebase. Verifique a internet ou a liberação da rede.','auth/weak-password':'A nova senha precisa ter pelo menos 6 caracteres.','auth/requires-recent-login':'Por segurança, saia e entre de novo antes de trocar a senha.','auth/operation-not-allowed':'Ative o método E-mail/senha no Firebase (Authentication → Sign-in method).','auth/admin-restricted-operation':'A criação de contas está desligada neste projeto, por segurança. Peça ao administrador do painel para criar a sua conta.','permission-denied':'A sua conta existe, mas não está liberada nas regras do Firestore. Peça ao administrador para incluir o seu login nas regras.'};
+const ERROS_FB={'auth/invalid-credential':'Login ou senha incorretos.','auth/wrong-password':'Senha incorreta.','auth/user-not-found':'Ainda não existe conta para este login. Peça a alguém da equipe para autorizar você em Ajustes → Autorizações.','auth/invalid-email':'Login inválido — use só letras e números.','auth/too-many-requests':'Muitas tentativas. Aguarde alguns minutos e tente de novo.','auth/network-request-failed':'Sem conexão com o Firebase. Verifique a internet ou a liberação da rede.','auth/weak-password':'A nova senha precisa ter pelo menos 6 caracteres.','auth/requires-recent-login':'Por segurança, saia e entre de novo antes de trocar a senha.','auth/operation-not-allowed':'Ative o método E-mail/senha no Firebase (Authentication → Sign-in method).','auth/admin-restricted-operation':'A criação de contas está desligada no Firebase. Ative em Authentication → Configurações → Ações do usuário → marcar a criação (inscrição).','permission-denied':'A sua conta existe, mas não está liberada nas regras do Firestore. Peça ao administrador para incluir o seu login nas regras.'};
 const msgFB=e=>{ if(e&&e.code&&ERROS_FB[e.code]) return ERROS_FB[e.code];
   const m=(e&&(e.message||e.code))||'erro desconhecido';
   if(/dynamically imported module|Failed to fetch|NetworkError/i.test(m)) return 'Não consegui carregar o Firebase. Verifique a internet ou se a rede do TJES libera www.gstatic.com e firestore.googleapis.com.';
@@ -2517,6 +2521,68 @@ async function prepararFirebase(){
   SYNC.mod={app,auth,fs}; SYNC.auth=auth.getAuth(a); SYNC.dbApp=a;
   try{ await auth.setPersistence(SYNC.auth,auth.browserLocalPersistence); }catch(e){}
   return SYNC;
+}
+/* Cria a conta usando uma segunda instância do Firebase: assim quem está logado
+   continua logado (createUser troca a sessão da instância em que é chamado). */
+async function criarContaEquipe(login,senha){
+  const c=syncCfg(); if(!c||!c.projectId) throw new Error('O painel não está ligado ao banco da equipe.');
+  if(!senha||senha.length<6) throw {code:'auth/weak-password'};
+  await prepararFirebase();
+  const {app,auth}=SYNC.mod;
+  let app2=null;
+  const nome='criar-'+Date.now();
+  try{
+    app2 = app.initializeApp(c, nome);
+    const au2 = auth.getAuth(app2);
+    await comPrazo(auth.createUserWithEmailAndPassword(au2, emailDe(login), senha), 25000, 'O Firebase não respondeu a tempo.');
+    try{ await auth.signOut(au2); }catch(e){}
+  } finally {
+    if(app2 && app.deleteApp){ try{ await app.deleteApp(app2); }catch(e){} }
+  }
+}
+function senhaSugerida(){
+  const s='abcdefghijkmnpqrstuvwxyz', n='23456789', v=new Uint32Array(10);
+  try{ crypto.getRandomValues(v); }catch(e){ for(let i=0;i<10;i++) v[i]=Math.floor(Math.random()*4294967295); }
+  let p=''; for(let i=0;i<6;i++) p+=s[v[i]%s.length]; for(let i=6;i<10;i++) p+=n[v[i]%n.length];
+  return p;
+}
+function pedirSenha(login,nomePessoa){ return new Promise(res=>{
+  abrirDialogo(`<h3>Criar a conta de ${esc(nomePessoa||login)}</h3>
+    <div class="msub">Escolha uma <b>senha provisória</b> (mínimo de 6 caracteres) para o login <b style="font-family:ui-monospace,monospace">${esc(login)}</b>.
+    Entregue o login e essa senha à pessoa; ela troca depois no menu do próprio nome.</div>
+    <div class="fld"><label>Senha provisória</label><input id="psS" value="${esc(senhaSugerida())}" style="font-family:ui-monospace,Consolas,monospace;font-size:16px" autofocus></div>
+    <div class="hint" id="psMsg" style="margin-top:6px">Sugerimos uma senha aleatória — pode trocar por outra se preferir.</div>
+    <div class="mfoot"><button class="btn" id="psC">Cancelar</button><button class="btn pri" id="psO">Criar conta</button></div>`);
+  let done=false; const fim=v=>{ if(done) return; done=true; dlg.close(); res(v); };
+  const ok=()=>{ const v=dlgBody.querySelector('#psS').value.trim();
+    if(v.length<6){ dlgBody.querySelector('#psMsg').innerHTML='<b style="color:var(--crit-ink)">A senha precisa ter pelo menos 6 caracteres.</b>'; return; }
+    fim(v); };
+  dlgBody.querySelector('#psC').onclick=()=>fim(null);
+  dlgBody.querySelector('#psO').onclick=ok;
+  dlgBody.querySelector('#psS').onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); ok(); } };
+  dlg.onclose=()=>fim(null);
+});}
+async function criarContaUI(login,nomePessoa){
+  const senha=await pedirSenha(login,nomePessoa);
+  if(!senha) return false;
+  try{ await criarContaEquipe(login,senha); }
+  catch(e){
+    if(e&&e.code==='auth/email-already-in-use'){ toast(`Já existe conta para “${login}”. Se a pessoa esqueceu a senha, apague a conta em Firebase → Authentication → Usuários e crie de novo aqui.`); return false; }
+    toast('Não consegui criar a conta: '+msgFB(e)); return false;
+  }
+  const a=aclUser(login); if(a){ a.contaEm=hojeISO(); salvar(); }
+  abrirDialogo(`<h3>✓ Conta criada</h3>
+    <div class="msub">Entregue estes dados a <b>${esc(nomePessoa||login)}</b>:</div>
+    <div class="cfgsec"><div style="font-family:ui-monospace,Consolas,monospace;font-size:15px;line-height:2">
+      Endereço: <b>${esc(location.origin+location.pathname)}</b><br>
+      Login: <b>${esc(login)}</b><br>
+      Senha provisória: <b>${esc(senha)}</b></div></div>
+    <div class="note">A pessoa já pode entrar. Peça que troque a senha no menu do nome dela → <i>Trocar a minha senha</i>.</div>
+    <div class="mfoot"><button class="btn" id="ccCopia">⧉ Copiar</button><button class="btn pri" id="ccOk">Pronto</button></div>`);
+  dlgBody.querySelector('#ccOk').onclick=()=>{ dlg.close(); abrirCfg('autorizacoes'); };
+  dlg.onclose=()=>{ setTimeout(()=>{ if(!dlg.open) abrirCfg('autorizacoes'); },10); };
+  dlgBody.querySelector('#ccCopia').onclick=async()=>{ try{ await navigator.clipboard.writeText(`Painel de Réus Presos\nEndereço: ${location.origin+location.pathname}\nLogin: ${login}\nSenha provisória: ${senha}`); toast('Dados copiados.'); }catch(e){} };
+  return true;
 }
 function esperarAuth(){
   return new Promise(res=>{
@@ -2661,10 +2727,8 @@ function cfgAutorizacoesHTML(){
   const A=acl();
   const nuvem=!!(syncCfg()&&syncCfg().projectId);
   const adm=!!A.contasPeloAdmin;
-  return `<div class="note">Qualquer pessoa autorizada pode liberar novos logins. O login é o mesmo usuário do TJES (sem e-mail).${(nuvem&&!adm)?' Ao autorizar, o painel gera um <b>código de convite</b>: só com esse código a pessoa cria a própria senha, na opção “Primeiro acesso” da tela de entrada.':''}</div>
-  ${nuvem?(adm?`<div class="note" style="background:var(--warn-soft)"><b>Modo “contas criadas pelo administrador”.</b> Depois de autorizar o login abaixo, crie a conta no Firebase: <b>Authentication → Usuários → Adicionar usuário</b>, com o e-mail técnico <b>login@${esc(dominio())}</b> e uma senha provisória.</div>`
-    :`<div class="note" style="background:var(--good-soft)"><b>Liberar alguém são dois cliques, tudo aqui:</b> autorize o login abaixo e gere o <b>🎟 convite</b>. Com o código, a pessoa cria a própria senha em “Primeiro acesso” e já entra. <b>Não é preciso mexer no Firebase.</b></div>`):''}
-  <label class="chk" style="margin-bottom:10px"><input type="checkbox" data-c="admconta" ${adm?'checked':''}> Contas criadas somente pelo administrador no Firebase <span class="cnt">(mais restritivo; com a caixa desmarcada vale o código de convite)</span></label>
+  return `<div class="note">Quem já usa o painel libera novas pessoas aqui. O login é o mesmo usuário do TJES (sem e-mail).</div>
+  ${nuvem?`<div class="note" style="background:var(--good-soft)"><b>Tudo é feito nesta tela.</b> Informe o login, o nome e o perfil, clique em <b>＋ Autorizar e criar conta</b> e escolha uma senha provisória. O painel cria a conta e libera o acesso na hora — <b>não é preciso mexer no Firebase</b>. Entregue à pessoa o endereço do site, o login e a senha; ela troca a senha depois no menu do próprio nome.</div>`:''}
   ${nuvem?'<div class="note" style="background:var(--good-soft)">Este painel está em modo equipe: a senha é sempre exigida e conferida pelo Firebase.</div>':'<div class="note" style="background:var(--good-soft)">A senha é sempre exigida. Fora do modo equipe, cada pessoa define a sua no primeiro acesso, e ela vale só neste navegador.</div>'}
   ${A.logins.map((a,i)=>`<div class="cfgrow" data-al="${i}" style="grid-template-columns:1.1fr 1.4fr 1fr auto auto">
     <input type="text" value="${esc(a.u)}" data-af="u" ${a.u==='klpizzol'?'readonly':''}>
@@ -2672,11 +2736,12 @@ function cfgAutorizacoesHTML(){
     <select data-af="perfil">${Object.entries(PERFIS).map(([k,v])=>`<option value="${k}" ${(a.perfil||'assessor')===k?'selected':''}>${v.nome}</option>`).join('')}</select>
     <button class="btn ghost sm" data-c="alsenha" title="Apagar a senha desta pessoa (ela define outra no próximo acesso)">🔑</button>
     ${a.u==='klpizzol'?'<span class="cnt">fixo</span>':`<button class="btn ghost sm" data-c="aldel" title="Remover autorização">🗑</button>`}</div>
-    <div class="cnt" style="margin:-2px 0 8px 4px">autorizado por ${esc(a.por||'—')} em ${br(a.em)||'—'}${(syncCfg()&&syncCfg().projectId)?` · conta: <b>${esc(a.u)}@${esc(dominio())}</b> <button class="btn ghost sm" data-c="alcopia" data-u="${esc(a.u)}" title="Copiar o e-mail técnico">⧉</button> ${A.contasPeloAdmin?'':`<button class="btn ghost sm" data-c="alconvite" data-u="${esc(a.u)}" title="Gerar um código de convite para esta pessoa criar (ou recriar) a senha">🎟 convite</button>`}`:(a.senhaHash?' · senha definida':'')}</div>`).join('')}
+    <div class="cnt" style="margin:-2px 0 8px 4px">autorizado por ${esc(a.por||'—')} em ${br(a.em)||'—'}${(syncCfg()&&syncCfg().projectId)?` · conta: <b>${esc(a.u)}@${esc(dominio())}</b> <button class="btn ghost sm" data-c="alcopia" data-u="${esc(a.u)}" title="Copiar o e-mail técnico">⧉</button> <button class="btn ghost sm" data-c="alconta" data-u="${esc(a.u)}" title="Criar a conta desta pessoa no banco e definir uma senha provisória">🔑 criar conta</button>${a.contaEm?` <span class="cnt">conta criada em ${br(a.contaEm)}</span>`:''}`:(a.senhaHash?' · senha definida':'')}</div>`).join('')}
   <div class="cfgsec" style="margin-top:12px"><h4>Autorizar novo login</h4>
     <div class="taskadd" style="grid-template-columns:1fr 1.3fr 1fr auto"><input id="alU" placeholder="login do TJES (ex.: mlsilva)"><input id="alN" placeholder="Nome da pessoa">
       <select id="alP">${Object.entries(PERFIS).map(([k,v])=>`<option value="${k}" ${k==='assessor'?'selected':''}>${v.nome}</option>`).join('')}</select>
-      <button class="btn sm pri" data-c="aladd">＋ Autorizar</button></div></div>`;
+      <button class="btn sm pri" data-c="aladd">＋ Autorizar e criar conta</button></div>
+    <div class="hint" style="margin-top:6px">Ao autorizar, o painel pede uma senha provisória e já cria a conta da pessoa. Nada precisa ser feito no Firebase.</div></div>`;
 }
 
 /* ---------- convites: só quem já tem conta autoriza novas contas ---------- */
@@ -2706,12 +2771,6 @@ service cloud.firestore {
       allow read, write: if autorizado();
     }
 
-    match /convites/{login} {
-      // quem foi convidado consulta o próprio convite antes de ter conta;
-      // o convite guarda só uma versão embaralhada do código.
-      allow get: if true;
-      allow list, create, update, delete: if autorizado();
-    }
   }
 }`;
 }
