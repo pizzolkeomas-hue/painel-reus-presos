@@ -2116,7 +2116,7 @@ function renderSyncBar(){
   if(ign===hojeISO()){ el.innerHTML=''; return; }
   const txt = !c||!c.projectId
     ? '<b>Este painel não está ligado ao banco da equipe.</b> O que você alterar fica só neste navegador — ninguém mais vê, e o que os colegas fizerem não chega aqui.'
-    : `<b>Configurado, mas sem conexão com o banco da equipe.</b> ${esc(SYNC.erro||'Verifique a internet ou a liberação da rede do TJES.')}`;
+    : `<b>Sem conexão com o banco da equipe.</b> Você está vendo e editando a cópia guardada neste navegador; o painel tenta reconectar sozinho e envia as alterações quando conseguir. <span class="cnt">${esc(SYNC.erro||'Verifique a internet ou a liberação da rede do TJES.')}</span>`;
   el.innerHTML=`<div class="bkbar crit">⚠ ${txt}
     <button class="btn sm pri" id="syGo">🔗 ${(!c||!c.projectId)?'Conectar agora':'Tentar de novo'}</button><button class="btn sm ghost" id="syIgn">Depois</button></div>`;
   el.querySelector('#syGo').onclick=async()=>{ if(c&&c.projectId){ const ok=await iniciarSync(true); if(ok){ toast('Conectado ao banco da equipe.'); renderSyncBar(); return; } } abrirCfg('sync'); };
@@ -2414,14 +2414,24 @@ function telaLogin(msg,u0){
   f.onsubmit=async e=>{ e.preventDefault(); await entrar(u.value.trim(), f.querySelector('#lkS').value); };
 }
 async function entrar(u,senha){
+  try{ return await entrar0(u,senha); }
+  catch(e){ telaLogin('Não consegui concluir a entrada: '+msgFB(e),u); }
+}
+async function entrar0(u,senha){
   u=norm(u).toLowerCase();
   const nuvem=!!(syncCfg()&&syncCfg().projectId);
   if(nuvem){
     const bt=document.querySelector('#lkForm button[type=submit]'); if(bt){ bt.disabled=true; bt.textContent='Entrando…'; }
-    try{ await loginFirebase(u,senha); }
+    try{ await comPrazo(loginFirebase(u,senha),20000,'O Firebase não respondeu a tempo. Verifique a internet ou a liberação da rede do TJES.'); }
     catch(e){ telaLogin(msgFB(e),u); return; }
     const ok=await iniciarSync();
-    if(!ok){ await sairFirebase(); telaLogin('Entrou no Firebase, mas não consegui ler os dados: '+SYNC.erro,u); return; }
+    if(!ok){
+      const a0=aclUser(u);
+      if(!a0){ await sairFirebase(); telaLogin('Entrou no Firebase, mas não consegui ler os dados: '+SYNC.erro,u); return; }
+      await entrar2(a0.u);
+      toast('Entrou, mas sem conexão com o banco da equipe: você vê os dados guardados neste navegador. O painel tenta reconectar sozinho.');
+      return;
+    }
   }
   const a=aclUser(u);
   if(!a){ if(nuvem) await sairFirebase(); telaLogin('Login não autorizado no painel. Peça a alguém da equipe para liberar o seu login em Ajustes → Autorizações.',u); return; }
@@ -2467,6 +2477,12 @@ function telaConectar(msg){
 
 /* ---------- sincronização (Supabase) ---------- */
 /* ---------- sincronização (Firebase / Firestore) ---------- */
+function comPrazo(p,ms,msg){
+  let id; return Promise.race([
+    Promise.resolve(p).finally(()=>clearTimeout(id)),
+    new Promise((_,rej)=>{ id=setTimeout(()=>rej(new Error(msg)),ms); })
+  ]);
+}
 const SYNC={on:false,fs:null,db:null,col:null,erro:'',aplicando:false,unsub:null,auth:null,mod:null,dbApp:null};
 const SB={};
 function cfgEmbutida(){ try{ const el=document.getElementById('syncCfgEmb'); const v=el&&JSON.parse(el.textContent||'null'); return (v&&v.projectId)?v:null; }catch(e){ return null; } }
@@ -2522,7 +2538,7 @@ async function iniciarSync(mostrarErro){
     if(!SYNC.auth.currentUser) throw new Error('Entre com o seu login do TJES para sincronizar.');
     const db=fs.getFirestore(SYNC.dbApp);
     SYNC.fs=fs; SYNC.db=db; SYNC.col=fs.collection(db,'painel');
-    const snap=await fs.getDocs(SYNC.col);
+    const snap=await comPrazo(fs.getDocs(SYNC.col),15000,'A leitura do banco demorou demais. Verifique a internet ou a liberação da rede do TJES.');
     const linhas=[]; snap.forEach(d=>linhas.push({id:d.id,data:d.data().d}));
     SYNC.on=true; SYNC.erro='';
     /* Se este navegador ainda está com os dados que vieram dentro do arquivo (nunca foi usado aqui)
@@ -2537,7 +2553,9 @@ async function iniciarSync(mostrarErro){
       const rows=[]; s.docChanges().forEach(ch=>rows.push({id:ch.doc.id,data:ch.type==='removed'?null:ch.doc.data().d}));
       if(rows.length) aplicarLinhas(rows);
     },e=>{ SYNC.erro=e.message||String(e); statusSync(); });
-    await empurrarTudo();
+    /* o envio vai em segundo plano e só manda o que mudou: recarregar a página
+       não reescreve o banco inteiro nem segura a tela de login. */
+    agendarPush();
     statusSync(); return true;
   }catch(e){ SYNC.on=false; SYNC.erro=msgFB(e); statusSync(); if(mostrarErro) toast('Não foi possível sincronizar: '+SYNC.erro); return false; }
 }
@@ -2601,15 +2619,19 @@ async function empurrar(){
     Object.keys(SB).forEach(id=>{ if(id.startsWith('chat_')&&!DB.chat.some(m=>m.id===id.slice(5))){ delete SB[id]; del.push(docId(id)); } });
     const porMes={}; DB.log.slice(-1500).forEach(e=>{ (porMes[mesLog(e)]=porMes[mesLog(e)]||[]).push(e); });
     Object.entries(porMes).forEach(([k,v])=>põe(k,{itens:v}));
-    for(let i=0;i<ops.length;i+=400){
+    /* lotes pequenos: as regras do Firestore consultam um documento a cada gravação
+       e há limite de consultas por lote. */
+    for(let i=0;i<ops.length;i+=15){
       const b=fs.writeBatch(SYNC.db||SYNC.col.firestore);
-      ops.slice(i,i+400).forEach(([id,body])=>b.set(fs.doc(SYNC.col,id),body));
-      await b.commit();
+      ops.slice(i,i+15).forEach(([id,body])=>b.set(fs.doc(SYNC.col,id),body));
+      try{ await comPrazo(b.commit(),25000,'O envio das alterações demorou demais.'); }
+      catch(err){ ops.slice(i,i+15).forEach(([id])=>delete SB[id]); throw err; }
     }
-    for(const id of del) await fs.deleteDoc(fs.doc(SYNC.col,id));
+    for(const id of del) await comPrazo(fs.deleteDoc(fs.doc(SYNC.col,id)),20000,'Não consegui apagar um registro no banco.');
     SYNC.erro=''; statusSync();
-  }catch(e){ SYNC.erro=e.message||String(e); statusSync(); }
-  pushPend=false;
+  }catch(e){ SYNC.erro=e.message||String(e); statusSync(); if(typeof renderSyncBar==='function') try{ renderSyncBar(); }catch(_){}
+    clearTimeout(pushT); pushT=setTimeout(()=>{ if(SYNC.on) empurrar(); },20000); }
+  finally{ pushPend=false; }
 }
 const REGRAS_FIREBASE=`rules_version = '2';
 service cloud.firestore {
@@ -3155,6 +3177,10 @@ renderTudo(); indicador(); gravar(); estadoBase=estadoAtual(); btnHist(); render
     telaLogin('', (u&&aclUser(u))?u:'');
   }
 })();
+
+/* reconecta sozinho quando a rede volta */
+setInterval(()=>{ if(LOGADO && !SYNC.on && !SYNC.aplicando){ const c=syncCfg(); if(c&&c.projectId&&SYNC.auth&&SYNC.auth.currentUser) iniciarSync(); } },45000);
+window.addEventListener('online',()=>{ if(LOGADO && !SYNC.on){ const c=syncCfg(); if(c&&c.projectId) iniciarSync(); } });
 
 let rzT=null; window.addEventListener('resize',()=>{clearTimeout(rzT); rzT=setTimeout(()=>document.querySelectorAll('.dilbox textarea').forEach(autosize),150);});
 window.addEventListener('beforeunload',()=>{ auditar(); try{ localStorage.setItem(CHAVE,JSON.stringify(DB)); }catch(e){} });
