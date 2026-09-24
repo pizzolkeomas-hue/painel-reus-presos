@@ -720,16 +720,31 @@ function todosTipos(){
 }
 
 let DB = JSON.parse(document.getElementById('dados').textContent);
-const SEMENTE = DB.salvoEm || '';
-let storageOK = true;
-try{ const s=localStorage.getItem(CHAVE); if(s){ const l=JSON.parse(s); if(l&&l.registros&&(l.salvoEm||'')>=(DB.salvoEm||'')) DB=l; } }catch(e){ storageOK=false; }
-const dadosDeFabrica = () => (DB.salvoEm||'')===SEMENTE;
+let storageOK = true, tinhaLocal = false;
+try{ const s=localStorage.getItem(CHAVE); if(s){ const l=JSON.parse(s); if(l&&l.registros&&(l.salvoEm||'')>=(DB.salvoEm||'')){ DB=l; tinhaLocal=true; } } }catch(e){ storageOK=false; }
+/* só um navegador que nunca usou o painel aceita o banco por cima do que veio no arquivo */
+const dadosDeFabrica = () => !tinhaLocal;
 DB = migrar(DB);
 let seq = DB.registros.reduce((m,r)=>Math.max(m,+String(r.id).replace(/\D/g,'')||0),0);
 const novoId = () => 'r'+(++seq);
 
 let saveTimer=null;
-function gravar(){ try{ localStorage.setItem(CHAVE,JSON.stringify(DB)); storageOK=true; }catch(e){ storageOK=false; } indicador(); if(typeof agendarPush==='function') agendarPush(); }
+let erroGravar='';
+function gravar(){
+  try{ localStorage.setItem(CHAVE,JSON.stringify(DB)); storageOK=true; erroGravar=''; tinhaLocal=true; }
+  catch(e){
+    /* quase sempre é falta de espaço: enxuga o histórico e o chat antigos e tenta de novo */
+    try{
+      DB.log=(DB.log||[]).slice(-2000); DB.chat=(DB.chat||[]).slice(-600); DB.avisos=(DB.avisos||[]).slice(-300);
+      localStorage.setItem(CHAVE,JSON.stringify(DB)); storageOK=true; tinhaLocal=true;
+      if(!erroGravar){ erroGravar=''; if(typeof toast==='function') toast('O painel enxugou o histórico e o chat antigos para caber no navegador. Os processos estão todos salvos.'); }
+    }catch(e2){
+      try{ localStorage.setItem(CHAVE,JSON.stringify(Object.assign({},DB,{log:[],chat:[],avisos:[],lixeira:[]}))); storageOK=true; tinhaLocal=true; erroGravar=''; }
+      catch(e3){ storageOK=false; erroGravar=e3.message||String(e3); }
+    }
+  }
+  indicador(); if(typeof agendarPush==='function') agendarPush();
+}
 function salvar(){
   DB.salvoEm=new Date().toISOString(); clearTimeout(saveTimer); IDX=null; if(typeof registrarHist==='function') registrarHist();
   saveTimer=setTimeout(gravar,(typeof digitando==='function'&&digitando())?900:300);
@@ -739,7 +754,8 @@ function auditarDepois(){ clearTimeout(audT); if(typeof digitando==='function'&&
 function indicador(){
   const el=document.getElementById('saveInd');
   if(storageOK){ el.className='save'; el.textContent='✓ Salvo às '+new Date(DB.salvoEm).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
-  else { el.className='save bad'; el.textContent='⚠ Salvamento automático indisponível — use “Baixar painel atualizado”'; }
+  else { el.className='save bad'; el.textContent='⚠ Não consegui salvar neste navegador'; el.title=erroGravar||''; }
+  if(typeof renderSyncBar==='function'){ try{ renderSyncBar(); }catch(e){} }
 }
 let historico=[];
 function snapshot(){}
@@ -1164,13 +1180,13 @@ function renderDrawer(r){
     <div class="sec" data-perm="cartorio"><h3>Etiquetas</h3><div class="picker" data-pick="etiquetas">${DB.config.listas.etiquetas.map(t=>`<button class="tag ${r.etiquetas.includes(t.v)?'on':''}" style="--c:${t.cor};--on:${onColor(t.cor)}" data-v="${esc(t.v)}">🏷 ${esc(t.v)}</button>`).join('')}<button class="addbtn" data-novo="etiquetas">＋ nova etiqueta</button></div></div>
     ${c.ativo?`<div class="sec" data-sec="dilig" data-perm="cartorio"><h3>Diligências</h3><textarea data-f="dilig" data-menc="1" placeholder="Anote as diligências… digite @ para citar alguém da equipe">${esc(r.dilig)}</textarea>
       <div class="frases">${frasesUsadas().map(f=>`<button data-frase="${esc(f)}" title="Inserir">${esc(trunc(f,60))}</button>`).join('')}<button data-frase="__hoje">＋ data de hoje</button></div>
-      <div class="citar" style="margin-top:6px">Citar: ${pessoas().filter(p=>p.id!==EU).map(p=>`<span class="pchip" data-citd="${p.id}" title="Citar ${esc(p.nome)} nas diligências">${avatar(p.id,1)} ${esc(p.apelido||p.nome)}</span>`).join('')||'<span class="cnt">cadastre a equipe em Ajustes → Equipe</span>'}</div>
+      <div class="citar" style="margin-top:6px">Citar: ${equipe().filter(p=>p.id!==EU).map(p=>`<span class="pchip" data-citd="${p.id}" title="Citar ${esc(p.nome)} nas diligências">${avatar(p.id,1)} ${esc(p.apelido||p.nome)}</span>`).join('')||'<span class="cnt">cadastre a equipe em Ajustes → Equipe</span>'}</div>
       <div class="hint">Quem for citado recebe um aviso no sininho 🔔 e no cartão do processo.</div></div>`:''}
     ${c.fatos||r.fatos?`<div class="sec" data-sec="fatos" data-perm="cadastro"><h3>Resumo dos fatos ${o.fatosPend?'<span class="pill prox" style="min-width:0;text-transform:none;letter-spacing:0">⚠ a preencher</span>':''}</h3><textarea class="big" data-f="fatos" placeholder="Descreva resumidamente os fatos imputados…">${esc(r.fatos)}</textarea></div>`:''}
     <div class="sec" data-sec="tarefas" data-perm="tarefas"><h3>Tarefas <span class="cnt" style="text-transform:none;letter-spacing:0">— atribua a alguém da equipe e defina prazo</span></h3>
       <div class="tasks" id="tkList"></div>
-      <div class="taskadd"><input id="tkTxt" placeholder="Nova tarefa — use @ para citar (ex.: cobrar laudo químico da PC)"><select id="tkResp"><option value="">Responsável…</option>${pessoas().map(p=>`<option value="${p.id}">${esc(p.nome)}</option>`).join('')}</select><input type="date" id="tkPrazo"><button class="btn sm pri" data-da="tkadd">＋ Adicionar</button></div>
-      <div class="citar" id="tkCit">Citar: ${pessoas().map(p=>`<span class="pchip" data-cit="${p.id}">${avatar(p.id,1)} ${esc(p.apelido||p.nome)}</span>`).join('')}</div>
+      <div class="taskadd"><input id="tkTxt" placeholder="Nova tarefa — use @ para citar (ex.: cobrar laudo químico da PC)"><select id="tkResp"><option value="">Responsável…</option>${equipe().map(p=>`<option value="${p.id}">${esc(p.nome)}</option>`).join('')}</select><input type="date" id="tkPrazo"><button class="btn sm pri" data-da="tkadd">＋ Adicionar</button></div>
+      <div class="citar" id="tkCit">Citar: ${equipe().map(p=>`<span class="pchip" data-cit="${p.id}">${avatar(p.id,1)} ${esc(p.apelido||p.nome)}</span>`).join('')}</div>
       <datalist id="dlResp">${[...new Set(DB.registros.flatMap(x=>x.tarefas.map(t=>t.resp)).filter(Boolean))].map(v=>`<option value="${esc(v)}">`).join('')}</datalist>
     </div>
     <div class="sec" data-perm="cadastro"><h3>${c.ativo?'Observações':esc(c.obsLabel)}</h3><textarea data-f="obs" data-menc="1">${esc(r.obs)}</textarea>
@@ -1452,7 +1468,7 @@ function abrirCfg(tab){
   if(tab==='equipe') corpo=`<div class="note">Pessoas que podem receber tarefas, ser citadas (@usuário) e conversar no chat. O perfil de cada pessoa é definido em <b>Ajustes → Autorizações</b>.</div>
     ${pessoas().map((p,i)=>`<div class="cfgrow" data-pe="${i}" style="grid-template-columns:34px 1.3fr 1fr 1fr auto"><input type="color" value="${p.cor}" data-pf="cor"><input type="text" value="${esc(p.nome)}" data-pf="nome" placeholder="Nome completo"><input type="text" value="${esc(p.apelido||'')}" data-pf="apelido" placeholder="Como aparece"><input type="text" value="${esc(p.cargo||'')}" data-pf="cargo" placeholder="Cargo / função">
       ${p.admin?'<span class="pill ok" title="Administrador">admin</span>':`<button class="btn ghost sm" data-c="pdel" title="Remover">🗑</button>`}</div>
-      <div style="margin:-2px 0 4px 42px;display:flex;gap:8px;align-items:center"><span class="cnt">Perfil:</span><select data-pf="perfil" ${pode('equipe')&&!p.admin?'':'disabled'} style="width:auto;padding:3px 6px">${Object.entries(PERFIS).filter(([k])=>k!=='admin'||p.admin).map(([k,v])=>`<option value="${k}" ${p.perfil===k?'selected':''}>${v.nome}</option>`).join('')}</select></div><div class="cnt" style="margin:-2px 0 8px 42px">usuário: <b>@${esc(p.id)}</b></div>`).join('')}
+      <div style="margin:-2px 0 4px 42px;display:flex;gap:8px;align-items:center"><span class="cnt">Perfil:</span><select data-pf="perfil" ${pode('equipe')&&!p.admin?'':'disabled'} style="width:auto;padding:3px 6px">${Object.entries(PERFIS).filter(([k])=>k!=='admin'||p.admin).map(([k,v])=>`<option value="${k}" ${p.perfil===k?'selected':''}>${v.nome}</option>`).join('')}</select></div><div class="cnt" style="margin:-2px 0 8px 42px">usuário: <b>@${esc(p.id)}</b>${aclUser(p.id)?'':' · <b style="color:var(--crit-ink)">sem login autorizado</b> — não aparece no chat nem nas citações'}</div>`).join('')}
     <div class="cfgsec" style="margin-top:12px"><h4>Incluir pessoa</h4><div class="taskadd" style="grid-template-columns:1.3fr 1fr 1fr auto"><input id="npNome" placeholder="Nome completo"><input id="npUser" placeholder="usuário (ex.: mlsilva)"><input id="npCargo" placeholder="Cargo / função"><button class="btn sm pri" data-c="padd">＋ Incluir</button></div></div>`;
   if(tab==='equipe') corpo+=`<div class="cfgsec" style="margin-top:12px"><h4>O que cada perfil pode fazer</h4><table><thead><tr><th>Perfil</th><th>Cadastro e fatos</th><th>Cartório (diligências, local, AIJ, laudos, etiquetas)</th><th>Mover/julgar</th><th>Excluir</th><th>Minutar</th><th>Aprovar minutas</th><th>Ajustes</th></tr></thead><tbody>${Object.values(PERFIS).map(v=>`<tr><td><b>${v.nome}</b></td>${['cadastro','cartorio','mover','excluir','minutar','aprovar','ajustes'].map(k=>`<td style="text-align:center">${v.p.includes(k)?'✓':'—'}</td>`).join('')}</tr>`).join('')}</tbody></table>
     <div class="hint" style="margin-top:6px">O perfil é definido no login de cada pessoa (Ajustes → Autorizações) e não pode ser trocado dentro do painel.</div></div>`;
@@ -1561,6 +1577,7 @@ function abrirCfg(tab){
       setSyncCfg(cfg); box.querySelector('#syMsg').textContent='conectando…';
       const ok=await iniciarSync(true); box.querySelector('#syMsg').textContent=ok?'✓ conectado — os dados deste painel foram enviados ao Firebase':'não conectou: '+SYNC.erro; return; }
     if(b0&&b0.dataset.c==='sydesc'){ setSyncCfg(null); SYNC.on=false; SYNC.erro=''; statusSync(); abrirCfg('sync'); toast('Sincronização desligada neste computador.'); return; }
+    if(b0&&b0.dataset.c==='sydiag'){ dlg.onclose=null; await diagnosticoSync(); return; }
     if(b0&&b0.dataset.c==='sycopy'){ const c=syncCfg(); if(!c||!c.projectId){ toast('Ainda não há configuração salva neste painel.'); return; }
       try{ await navigator.clipboard.writeText(JSON.stringify(c,null,1)); toast('Configuração copiada — cole no outro painel em Ajustes → Sincronização.'); }
       catch(e){ const ta=box.querySelector('#fbCfg'); if(ta){ ta.focus(); ta.select(); } toast('Selecione o texto da caixa e copie com Ctrl+C.'); } return; }
@@ -1660,7 +1677,7 @@ const iniciais=n=>String(n||'?').split(/\s+/).filter(Boolean).map(s=>s[0]).filte
 function avatar(id,sm){ const p=pessoa(id)||{nome:id||'?',cor:'#7d7b74'}; return `<span class="av ${sm?'sm':''}" style="--c:${p.cor}" title="${esc(p.nome)}">${esc(iniciais(p.apelido||p.nome))}</span>`; }
 let EU='klpizzol'; try{ EU=localStorage.getItem(USR_KEY)||'klpizzol'; }catch(e){}
 if(!pessoa(EU)) EU=pessoas()[0].id;
-function parseMenc(txt){ const ids=new Set(); (String(txt||'').match(/@([\wÀ-ÿ.\-]+)/g)||[]).forEach(m=>{ const k=norm(m.slice(1)); const p=pessoas().find(p=>norm(p.id)===k||norm(p.apelido)===k||norm(p.nome.split(' ')[0])===k); if(p) ids.add(p.id); }); return [...ids]; }
+function parseMenc(txt){ const ids=new Set(); (String(txt||'').match(/@([\wÀ-ÿ.\-]+)/g)||[]).forEach(m=>{ const k=norm(m.slice(1)); const p=equipe().find(p=>norm(p.id)===k||norm(p.apelido)===k||norm(p.nome.split(' ')[0])===k); if(p) ids.add(p.id); }); return [...ids]; }
 function renderMe(){
   const p=pessoa(EU)||{id:EU,nome:EU,apelido:EU,cor:'#7d7b74',perfil:'assessor'};
   document.getElementById('btnMe').innerHTML=`${avatar(EU)}<span>${esc(p.apelido||p.nome)}</span> ▾`;
@@ -1802,7 +1819,8 @@ function renderLogList(){ const l=filtrarLog(); const el=dlgBody.querySelector('
 /* ================= chat ================= */
 let chatAberto=false, chatCanal='geral';
 const canalDM=(a,b)=>'dm:'+[a,b].sort().join('|');
-const meusCanais=()=>['geral',...pessoas().filter(p=>p.id!==EU).map(p=>canalDM(EU,p.id))];
+const equipe=()=>pessoas().filter(p=>!!aclUser(p.id));
+const meusCanais=()=>['geral',...equipe().filter(p=>p.id!==EU).map(p=>canalDM(EU,p.id))];
 function naoLidas(canal){ const lido=(DB.chatLido[EU]||{}); const cs=canal?[canal]:meusCanais();
   return DB.chat.filter(m=>cs.includes(m.canal)&&m.autor!==EU&&m.ts>(lido[m.canal]||'')).length; }
 function renderChatBadge(){ const n=naoLidas(); document.getElementById('chatBadge').textContent=n||''; }
@@ -1819,10 +1837,10 @@ document.getElementById('chClose').onclick=fecharChat;
 document.getElementById('chLimpar').onclick=()=>limparConversa();
 function renderChat(){
   if(!meusCanais().includes(chatCanal)) chatCanal='geral';
-  const outros=pessoas().filter(p=>p.id!==EU);
+  const outros=equipe().filter(p=>p.id!==EU);
   const un=c=>{ const n=naoLidas(c); return n?`<span class="un">${n}</span>`:''; };
   document.getElementById('chList').innerHTML=`<button data-c="geral" class="${chatCanal==='geral'?'on':''}"># Geral (todos)${un('geral')}</button><div class="sep">Conversas individuais</div>`+
-    (outros.length?outros.map(p=>{ const c=canalDM(EU,p.id); return `<button data-c="${c}" class="${chatCanal===c?'on':''}">${avatar(p.id,1)} ${esc(p.apelido||p.nome)}${un(c)}</button>`; }).join(''):'<div class="cnt" style="padding:4px 8px;white-space:normal">Cadastre a equipe em ⚙ Ajustes → Equipe.</div>');
+    (outros.length?outros.map(p=>{ const c=canalDM(EU,p.id); return `<button data-c="${c}" class="${chatCanal===c?'on':''}">${avatar(p.id,1)} ${esc(p.apelido||p.nome)}${un(c)}</button>`; }).join(''):'<div class="cnt" style="padding:4px 8px;white-space:normal">Ainda não há outras pessoas com acesso. Libere em ⚙ Ajustes → Autorizações.</div>');
   const msgs=DB.chat.filter(m=>m.canal===chatCanal);
   const el=document.getElementById('chMsgs');
   el.innerHTML = msgs.length ? msgs.map(m=>{ const d=new Date(m.ts);
@@ -1853,7 +1871,7 @@ chTxt.addEventListener('keydown',e=>{
 chTxt.addEventListener('input',()=>{
   const pre=chTxt.value.slice(0,chTxt.selectionStart), m=pre.match(/@([\wÀ-ÿ.\-]*)$/), sg=document.getElementById('chSug');
   if(!m){ fecharSug(); return; }
-  const q=norm(m[1]); const l=pessoas().filter(p=>!q||norm(p.id).startsWith(q)||norm(p.apelido).startsWith(q)||norm(p.nome).includes(q));
+  const q=norm(m[1]); const l=equipe().filter(p=>!q||norm(p.id).startsWith(q)||norm(p.apelido).startsWith(q)||norm(p.nome).includes(q));
   if(!l.length){ fecharSug(); return; }
   sugSel=0; sg.innerHTML=l.map((p,i)=>`<button data-p="${p.id}" class="${i===0?'sel':''}">${avatar(p.id,1)} ${esc(p.nome)} <span class="cnt">@${esc(p.id)}</span></button>`).join(''); sg.classList.add('on');
 });
@@ -2116,6 +2134,18 @@ function marcarBackup(){ DB.config.ultimoBackup=new Date().toISOString(); gravar
 function renderSyncBar(){
   const el=document.getElementById('syncBar'); if(!el) return;
   const c=syncCfg();
+  if(!storageOK){
+    el.innerHTML=`<div class="bkbar crit">⛔ <b>Não consegui salvar neste navegador.</b> ${esc(erroGravar||'')} Use <b>Ferramentas → Baixar painel atualizado</b> agora para não perder o trabalho.
+      <button class="btn sm pri" id="syBk">⬇ Baixar cópia</button></div>`;
+    el.querySelector('#syBk').onclick=baixarHTML; return;
+  }
+  if(SYNC.on && SYNC.erroPush){
+    el.innerHTML=`<div class="bkbar crit">⚠ <b>${PEND.size} alteração(ões) ainda não foram para o banco da equipe.</b> ${esc(SYNC.erroPush)}
+      <span class="cnt">Elas estão guardadas aqui e o painel tenta de novo sozinho.</span>
+      <button class="btn sm pri" id="syRe">Tentar agora</button></div>`;
+    el.querySelector('#syRe').onclick=()=>{ empurrar(); toast('Enviando…'); };
+    return;
+  }
   if(SYNC.on){ el.innerHTML=''; return; }
   let ign=''; try{ ign=localStorage.getItem('painel-sync-ign')||''; }catch(e){}
   if(ign===hojeISO()){ el.innerHTML=''; return; }
@@ -2487,7 +2517,8 @@ function comPrazo(p,ms,msg){
     new Promise((_,rej)=>{ id=setTimeout(()=>rej(new Error(msg)),ms); })
   ]);
 }
-const SYNC={on:false,fs:null,db:null,col:null,erro:'',aplicando:false,unsub:null,auth:null,mod:null,dbApp:null};
+const PEND=new Set();      /* documentos alterados aqui e ainda não confirmados pelo servidor */
+const SYNC={on:false,fs:null,db:null,col:null,erro:'',erroPush:'',aplicando:false,unsub:null,auth:null,mod:null,dbApp:null};
 const SB={};
 function cfgEmbutida(){ try{ const el=document.getElementById('syncCfgEmb'); const v=el&&JSON.parse(el.textContent||'null'); return (v&&v.projectId)?v:null; }catch(e){ return null; } }
 function syncCfg(){
@@ -2625,9 +2656,45 @@ async function iniciarSync(mostrarErro){
     statusSync(); return true;
   }catch(e){ SYNC.on=false; SYNC.erro=msgFB(e); statusSync(); if(mostrarErro) toast('Não foi possível sincronizar: '+SYNC.erro); return false; }
 }
+let DIAG=[];
+function renderDiag(){
+  abrirDialogo(`<h3>🩺 Teste de conexão e permissões</h3>
+    <div class="msub">Cada linha mostra exatamente onde está o problema, com a mensagem original do Firebase.</div>
+    <div class="cfgsec"><table><tbody>${DIAG.map(p=>`<tr><td style="width:26px;font-size:16px">${p.ok===null?'⏳':p.ok?'✅':'❌'}</td><td><b>${esc(p.n)}</b>${p.msg?`<br><span class="cnt" style="white-space:normal">${esc(p.msg)}</span>`:''}</td></tr>`).join('')}</tbody></table></div>
+    ${DIAG.some(p=>p.ok===false)?'<div class="note" style="background:var(--crit-soft)">Se a falha for de <b>permissão</b>, copie as regras logo abaixo desta janela (⧉ Copiar regras) e publique de novo em Firebase → Firestore → Regras.</div>':''}
+    <div class="mfoot"><button class="btn pri" id="dgOk">Fechar</button></div>`);
+  const b=dlgBody.querySelector('#dgOk'); if(b) b.onclick=()=>{ dlg.close(); abrirCfg('sync'); };
+}
+async function diagnosticoSync(){
+  DIAG=[]; const add=(n,ok,msg)=>{ DIAG.push({n,ok,msg:msg||''}); renderDiag(); };
+  const erro=e=>((e&&e.code)?e.code+' — ':'')+((e&&e.message)||String(e));
+  const c=syncCfg();
+  if(!c||!c.projectId){ add('Configuração do Firebase',false,'Nenhuma configuração salva neste painel.'); return; }
+  add('Configuração do Firebase',true,'projeto '+c.projectId+' · domínio das contas: '+dominio());
+  try{ await prepararFirebase(); add('Carregar o Firebase',true,'bibliotecas carregadas'); }
+  catch(e){ add('Carregar o Firebase',false,erro(e)); return; }
+  const u=SYNC.auth&&SYNC.auth.currentUser;
+  if(!u){ add('Sessão autenticada',false,'Ninguém está autenticado nesta aba. Saia e entre de novo.'); return; }
+  add('Sessão autenticada',true,u.email);
+  const {fs}=SYNC.mod;
+  const db=SYNC.db||fs.getFirestore(SYNC.dbApp), col=SYNC.col||fs.collection(db,'painel');
+  let snap=null;
+  try{ snap=await comPrazo(fs.getDocs(col),20000,'sem resposta em 20 s'); let n=0; snap.forEach(()=>n++); add('Ler o banco da equipe',true,n+' documento(s)'); }
+  catch(e){ add('Ler o banco da equipe',false,erro(e)); return; }
+  let temAut=false; snap.forEach(d=>{ if(d.id==='autorizados') temAut=true; });
+  add('Lista de autorizados no banco',temAut,temAut?acl().logins.map(a=>a.u).join(', '):'O documento painel/autorizados ainda não subiu. Ele é criado no primeiro envio.');
+  try{ await comPrazo(fs.setDoc(fs.doc(col,'_diagnostico'),{d:{t:new Date().toISOString()},por:EU,em:new Date().toISOString()}),20000,'sem resposta em 20 s');
+       add('Gravar no banco da equipe',true,'gravação de teste aceita'); }
+  catch(e){ add('Gravar no banco da equipe',false,erro(e)); return; }
+  try{ await comPrazo(fs.deleteDoc(fs.doc(col,'_diagnostico')),20000,'sem resposta em 20 s'); add('Apagar no banco da equipe',true,'limpeza do teste ok'); }
+  catch(e){ add('Apagar no banco da equipe',false,erro(e)); }
+  add('Alterações pendentes de envio',PEND.size===0,PEND.size?PEND.size+' documento(s) esperando — use “Tentar agora” na faixa vermelha do topo.':'nenhuma');
+  add('Salvamento neste navegador',storageOK,storageOK?'ok':(erroGravar||'falhou'));
+}
 function statusSync(){
   const el=document.getElementById('syncInd'); if(!el) return;
-  el.innerHTML = SYNC.on?`<span class="pill real" title="As alterações aparecem para toda a equipe">● sincronizado</span>`
+  el.innerHTML = (SYNC.on&&SYNC.erroPush)?`<span class="pill venc" title="${esc(SYNC.erroPush)}">● ${PEND.size} a enviar</span>`
+    : SYNC.on?`<span class="pill real" title="As alterações aparecem para toda a equipe">● sincronizado</span>`
     : SYNC.erro?`<span class="pill venc" title="${esc(SYNC.erro)}">● sem sincronizar</span>`
     : `<span class="pill ama" title="Clique para ligar o painel ao banco da equipe">● só neste navegador</span>`;
   el.onclick=()=>{ if(!SYNC.on) abrirCfg('sync'); };
@@ -2645,6 +2712,7 @@ function aplicarLinhas(rows,inicial){
   rows.forEach(row=>{
     const id=row.id, d=row.data, s=d?JSON.stringify(d):null;
     if(d && SB[id]===s) return;               /* eco da nossa própria gravação */
+    if(PEND.has(id)) return;                  /* temos alteração local ainda não confirmada: ela manda */
     if(id==='config'&&d){ DB.config=d; SB[id]=s; mudou=true; }
     else if(id==='acl'&&d){ DB.acl=d; SB[id]=s; mudou=true; }
     else if(id==='lixeira'&&d){ DB.lixeira=d.itens||[]; SB[id]=s; mudou=true; }
@@ -2677,7 +2745,7 @@ async function empurrar(){
   const fs=SYNC.fs;
   try{
     const ops=[], del=[];
-    const põe=(id,data)=>{ const s=JSON.stringify(data); if(SB[id]===s) return; SB[id]=s; ops.push([docId(id),{d:data,por:EU,em:new Date().toISOString()}]); };
+    const põe=(id,data)=>{ const s=JSON.stringify(data); if(SB[id]===s) return; SB[id]=s; PEND.add(id); ops.push([id,docId(id),{d:data,por:EU,em:new Date().toISOString()}]); };
     DB.registros.forEach(r=>põe('r_'+r.id,r));
     Object.keys(SB).forEach(id=>{ if(id.startsWith('r_')&&!byId(id.slice(2))){ delete SB[id]; del.push(docId(id)); } });
     põe('config',DB.config); põe('acl',DB.acl); põe('lixeira',{itens:DB.lixeira}); põe('avisos',{itens:(DB.avisos||[]).slice(-500)}); põe('autorizados',{emails:acl().logins.map(a=>emailDe(a.u))});
@@ -2687,15 +2755,18 @@ async function empurrar(){
     Object.entries(porMes).forEach(([k,v])=>põe(k,{itens:v}));
     /* lotes pequenos: as regras do Firestore consultam um documento a cada gravação
        e há limite de consultas por lote. */
-    for(let i=0;i<ops.length;i+=15){
+    /* lotes pequenos: as regras do Firestore consultam um documento a cada gravação
+       e há limite de consultas por lote. */
+    for(let i=0;i<ops.length;i+=10){
+      const lote=ops.slice(i,i+10);
       const b=fs.writeBatch(SYNC.db||SYNC.col.firestore);
-      ops.slice(i,i+15).forEach(([id,body])=>b.set(fs.doc(SYNC.col,id),body));
-      try{ await comPrazo(b.commit(),25000,'O envio das alterações demorou demais.'); }
-      catch(err){ ops.slice(i,i+15).forEach(([id])=>delete SB[id]); throw err; }
+      lote.forEach(([,docid,body])=>b.set(fs.doc(SYNC.col,docid),body));
+      try{ await comPrazo(b.commit(),25000,'O envio das alterações demorou demais.'); lote.forEach(([id])=>PEND.delete(id)); }
+      catch(err){ lote.forEach(([id])=>{ delete SB[id]; }); throw err; }
     }
     for(const id of del) await comPrazo(fs.deleteDoc(fs.doc(SYNC.col,id)),20000,'Não consegui apagar um registro no banco.');
-    SYNC.erro=''; statusSync();
-  }catch(e){ SYNC.erro=e.message||String(e); statusSync(); if(typeof renderSyncBar==='function') try{ renderSyncBar(); }catch(_){}
+    SYNC.erro=''; SYNC.erroPush=''; statusSync(); if(typeof renderSyncBar==='function') try{ renderSyncBar(); }catch(_){}
+  }catch(e){ SYNC.erroPush=msgFB(e); statusSync(); if(typeof renderSyncBar==='function') try{ renderSyncBar(); }catch(_){}
     clearTimeout(pushT); pushT=setTimeout(()=>{ if(SYNC.on) empurrar(); },20000); }
   finally{ pushPend=false; }
 }
@@ -2712,7 +2783,7 @@ function cfgSyncHTML(){
   return `<div class="note">Para a equipe ver as alterações ao mesmo tempo, o painel usa o <b>Firebase (Firestore)</b> — plano gratuito. O passo a passo completo está no arquivo de instruções que acompanha o painel.</div>
   <div class="fld"><label>Configuração do Firebase (cole o bloco <b>firebaseConfig</b> do console)</label>
     <textarea id="fbCfg" style="min-height:130px;font-family:ui-monospace,Consolas,monospace;font-size:12px" placeholder='const firebaseConfig = {\n  apiKey: "AIza...",\n  authDomain: "seu-projeto.firebaseapp.com",\n  projectId: "seu-projeto",\n  appId: "1:123...:web:abc..."\n};'>${c.projectId?esc(JSON.stringify(c,null,1)):''}</textarea></div>
-  <div class="acts" style="margin-top:10px"><button class="btn pri" data-c="syok">Salvar e conectar</button><button class="btn" data-c="sycopy" title="Copiar para colar em outro painel">⧉ Copiar configuração</button><button class="btn" data-c="sydesc">Desconectar</button><span id="syMsg" class="cnt"></span></div>
+  <div class="acts" style="margin-top:10px"><button class="btn pri" data-c="syok">Salvar e conectar</button><button class="btn" data-c="sydiag" title="Descobrir exatamente o que está falhando">🩺 Testar conexão e permissões</button><button class="btn" data-c="sycopy" title="Copiar para colar em outro painel">⧉ Copiar configuração</button><button class="btn" data-c="sydesc">Desconectar</button><span id="syMsg" class="cnt"></span></div>
   <div class="cfgsec" style="margin-top:14px"><h4>Regras do Firestore (cole em Firestore Database → Regras)</h4>
     <div class="note" style="background:var(--good-soft);margin-bottom:8px">Cole isto <b>uma única vez</b>. A partir daí, quem manda é a lista de <b>⚙ Ajustes → Autorizações</b>: autorizou alguém no painel, a pessoa entra. Não precisa mexer no Firebase de novo.</div>
     <textarea readonly id="fbRegras" style="min-height:250px;font-family:ui-monospace,Consolas,monospace;font-size:12px">${esc(regrasFirestore())}</textarea>
@@ -2961,7 +3032,7 @@ document.addEventListener('input', e=>{
   const pre=ta.value.slice(0, ta.selectionStart||0), m=pre.match(/@([\wÀ-ÿ.\-]*)$/);
   if(!m){ fecharMC(); return; }
   const q=norm(m[1]);
-  const l=pessoas().filter(p=>p.id!==EU).filter(p=>!q || norm(p.id).startsWith(q) || norm(p.apelido||'').startsWith(q) || norm(p.nome).includes(q)).slice(0,8);
+  const l=equipe().filter(p=>p.id!==EU).filter(p=>!q || norm(p.id).startsWith(q) || norm(p.apelido||'').startsWith(q) || norm(p.nome).includes(q)).slice(0,8);
   if(!l.length){ fecharMC(); return; }
   abrirMC(ta,l);
 }, true);
