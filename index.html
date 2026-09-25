@@ -536,7 +536,7 @@ body.foco .kpis,body.foco .agenda,body.foco .panels,body.foco #bkBar{display:non
 <script>
 const PAGINA = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
 const CHAVE = 'painel-reus-presos-2vara-afonso-claudio';
-const VERSAO='v28 · 24/09/2026';
+const VERSAO='v30 · 25/09/2026';
 const HOJE = new Date(); HOJE.setHours(0,0,0,0);
 const DIA = 864e5;
 const iso = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
@@ -2151,6 +2151,12 @@ function renderSyncBar(){
       <button class="btn sm pri" id="syBk">⬇ Baixar cópia</button></div>`;
     el.querySelector('#syBk').onclick=baixarHTML; return;
   }
+  if(SYNC.on && SYNC.cotaAte && Date.now()<SYNC.cotaAte){
+    el.innerHTML=`<div class="bkbar">⏳ <b>Limite diário do Firebase atingido.</b> ${esc(textoCota())}
+      <span class="cnt">${PEND.size} alteração(ões) na fila · ${gravHoje().toLocaleString('pt-BR')} gravações hoje.</span>
+      <button class="btn sm ghost" id="syBk3">⬇ Backup</button></div>`;
+    el.querySelector('#syBk3').onclick=baixarJSON; return;
+  }
   if(SYNC.on && SYNC.erroPush){
     el.innerHTML=`<div class="bkbar crit">⚠ <b>${PEND.size} alteração(ões) ainda não foram para o banco da equipe.</b> ${esc(SYNC.erroPush)}
       <span class="cnt">Elas ficam guardadas neste navegador, inclusive se você recarregar a página, e o painel tenta de novo sozinho.</span>
@@ -2535,7 +2541,34 @@ const PEND_KEY='painel-pendentes';
 const PEND=new Set();      /* documentos alterados aqui e ainda não confirmados pelo servidor */
 try{ (JSON.parse(localStorage.getItem(PEND_KEY)||'[]')||[]).forEach(x=>PEND.add(x)); }catch(e){}
 function salvarPend(){ try{ localStorage.setItem(PEND_KEY,JSON.stringify([...PEND].slice(-3000))); }catch(e){} }
-const SYNC={on:false,viaRest:false,transporte:'',ultimaLeitura:'',fs:null,db:null,col:null,erro:'',erroPush:'',aplicando:false,unsub:null,auth:null,mod:null,dbApp:null};
+const GRAV_KEY='painel-gravacoes';
+let GRAV={dia:'',n:0};
+try{ const g=JSON.parse(localStorage.getItem(GRAV_KEY)||'null'); if(g&&g.dia) GRAV=g; }catch(e){}
+function contarGrav(n){ const h=hojeISO(); if(GRAV.dia!==h) GRAV={dia:h,n:0}; GRAV.n+=n||0;
+  try{ localStorage.setItem(GRAV_KEY,JSON.stringify(GRAV)); }catch(e){} }
+function gravHoje(){ return (GRAV.dia===hojeISO())?GRAV.n:0; }
+const COTA_DIA=20000;   /* plano gratuito do Firestore: 20 mil gravações por dia */
+const LIM_DIA=12000;    /* o painel para bem antes, para nunca esgotar a cota sozinho */
+let ULT_OK=''; try{ ULT_OK=localStorage.getItem('painel-ult-envio')||''; }catch(e){}
+const ERROS_SYNC=[];
+function anotarErro(m){ ERROS_SYNC.unshift({ts:new Date().toISOString(),m:String(m).slice(0,200)}); if(ERROS_SYNC.length>8) ERROS_SYNC.pop(); }
+function ehCota(e){ const s=((e&&e.message)||'')+' '+((e&&e.code)||'')+' '+String(e); return /RESOURCE_EXHAUSTED|resource-exhausted|429|quota/i.test(s); }
+function proximoResetCota(){
+  /* a cota do Firestore zera à meia-noite no Pacífico */
+  const agora=new Date();
+  let la; try{ la=new Date(agora.toLocaleString('en-US',{timeZone:'America/Los_Angeles'})); }catch(e){ la=new Date(agora.getTime()-7*3600e3); }
+  const desloc=agora.getTime()-la.getTime();
+  const meiaNoite=new Date(la.getFullYear(),la.getMonth(),la.getDate()+1,0,0,0);
+  return new Date(meiaNoite.getTime()+desloc);
+}
+function textoCota(){
+  const d=new Date(SYNC.cotaAte||0);
+  return 'A cota diária gratuita do Firebase acabou. Ela zera automaticamente por volta das '
+    + d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})
+    + ' de ' + d.toLocaleDateString('pt-BR')
+    + ', e tudo o que está na fila sobe sozinho. Continue trabalhando: nada se perde.';
+}
+const SYNC={on:false,cotaAte:0,viaRest:false,transporte:'',ultimaLeitura:'',fs:null,db:null,col:null,erro:'',erroPush:'',aplicando:false,unsub:null,auth:null,mod:null,dbApp:null};
 const SB={};
 function cfgEmbutida(){ try{ const el=document.getElementById('syncCfgEmb'); const v=el&&JSON.parse(el.textContent||'null'); return (v&&v.projectId)?v:null; }catch(e){ return null; } }
 function syncCfg(){
@@ -2715,6 +2748,7 @@ async function gravarDoc(docid,body){
   if(SYNC.viaRest) return restGravar(docid,body);
   try{ await comPrazo(SYNC.fs.setDoc(SYNC.fs.doc(SYNC.col,docid),body),12000,'tempo esgotado ao gravar '+docid); }
   catch(e){
+    if(ehCota(e)) throw e;          /* a via direta usa a mesma cota: não adianta tentar */
     await restGravar(docid,body);
     if(!SYNC.viaRest){ ligarViaRest(true); toast('A gravação normal não passou nesta rede. O painel mudou para a via direta e vai continuar por ela.'); }
   }
@@ -2802,6 +2836,7 @@ async function diagnosticoSync(){
   try{ const tam=id=>{ try{ return Math.round(JSON.stringify(id).length/1024); }catch(e){ return 0; } };
     add('Tamanho dos dados',true,`processos: ${tam(DB.registros)} KB · registro de movimentações: ${tam(DB.log)} KB (${(DB.log||[]).length} lançamentos) · chat: ${tam(DB.chat)} KB · lixeira: ${tam(DB.lixeira)} KB`);
   }catch(e){}
+  add('Gravações hoje',gravHoje()<COTA_DIA*0.8,gravHoje().toLocaleString('pt-BR')+' de '+COTA_DIA.toLocaleString('pt-BR')+' do plano gratuito'+(SYNC.cotaAte&&Date.now()<SYNC.cotaAte?' — LIMITE ATINGIDO, zera às '+new Date(SYNC.cotaAte).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):''));
   add('Alterações pendentes de envio',PEND.size===0,PEND.size?PEND.size+' documento(s) esperando — use “Tentar agora” na faixa vermelha do topo.':'nenhuma');
   add('Salvamento neste navegador',storageOK,storageOK?'ok':(erroGravar||'falhou'));
 }
@@ -2856,9 +2891,21 @@ function aplicarLinhas(rows,inicial){
 const mesLog=e=>'log_'+e.ts.slice(0,7);
 async function empurrarTudo(){ Object.keys(SB).forEach(k=>delete SB[k]); await empurrar(); }
 let pushT=null, pushPend=false;
-function agendarPush(){ if(!SYNC.on||SYNC.aplicando) return; clearTimeout(pushT); pushT=setTimeout(()=>empurrar(),700); }
+let ultimoPush=0, ultimoLog=0;
+function agendarPush(){
+  if(!SYNC.on||SYNC.aplicando) return;
+  if(SYNC.cotaAte && Date.now()<SYNC.cotaAte) return;          /* cota estourada: nada de insistir */
+  if(gravHoje()>=LIM_DIA){ SYNC.erroPush=''; return; }         /* trava de segurança do dia */
+  clearTimeout(pushT);
+  /* enquanto se digita, não envia nada: o texto inteiro vira uma gravação só */
+  const espera = digitando() ? 4000 : Math.max(2500, 6000-(Date.now()-ultimoPush));
+  pushT=setTimeout(()=>{ if(digitando()){ agendarPush(); return; } empurrar(); }, espera);
+}
 async function empurrar(){
-  if(!SYNC.on||pushPend) return; pushPend=true;
+  if(!SYNC.on||pushPend) return;
+  if(SYNC.cotaAte && Date.now()<SYNC.cotaAte){ SYNC.erroPush=textoCota(); statusSync(); try{ renderSyncBar(); }catch(e){} return; }
+  if(gravHoje()>=LIM_DIA){ statusSync(); try{ renderSyncBar(); }catch(e){} return; }
+  pushPend=true; ultimoPush=Date.now();
   const fs=SYNC.fs;
   try{
     const ops=[], del=[];
@@ -2876,7 +2923,8 @@ async function empurrar(){
     /* registro de movimentações: pedaços de 150 lançamentos, nomeados de forma estável */
     const porMes={}; DB.log.forEach(e=>{ const k=mesLog(e); (porMes[k]=porMes[k]||[]).push(e); });
     const meses=Object.keys(porMes).sort().slice(-3), idsLog=new Set();
-    meses.forEach(k=>{ const arr=porMes[k];
+    const mandaLog = ops.length>0 || (Date.now()-ultimoLog)>600000; if(mandaLog) ultimoLog=Date.now();
+    if(mandaLog) meses.forEach(k=>{ const arr=porMes[k];
       for(let i=0;i<arr.length;i+=150){ const id=k+'_'+String(Math.floor(i/150)).padStart(3,'0'); idsLog.add(id); põe(id,{itens:arr.slice(i,i+150)}); } });
     /* apaga do banco os documentos de registro do formato antigo (um por mês, grande demais) */
     Object.keys(SB).forEach(id=>{ if(/^log_\d{4}-\d{2}$/.test(id)){ delete SB[id]; PEND.delete(id); del.push(docId(id)); } });
@@ -2892,13 +2940,13 @@ async function empurrar(){
       lote.forEach(([,docid,body])=>b.set(fs.doc(SYNC.col,docid),body));
       let feito=false;
       if(!SYNC.viaRest){
-        try{ await comPrazo(b.commit(),18000,'tempo esgotado no lote'); feito=true; lote.forEach(([id])=>PEND.delete(id)); salvarPend(); }
+        try{ await comPrazo(b.commit(),18000,'tempo esgotado no lote'); feito=true; contarGrav(lote.length); lote.forEach(([id])=>PEND.delete(id)); salvarPend(); }
         catch(err){ /* cai para documento a documento, e daí para a via direta */ }
       }
       if(!feito){
         let ultimo=null, passou=0;
         for(const [id,docid,body] of lote){
-          try{ await gravarDoc(docid,body); PEND.delete(id); passou++; }
+          try{ await gravarDoc(docid,body); contarGrav(1); PEND.delete(id); passou++; }
           catch(e2){ ultimo=e2; delete SB[id]; }
         }
         salvarPend();
@@ -2909,9 +2957,18 @@ async function empurrar(){
       }
     }
     for(const id of del){ if(SYNC.viaRest){ await restApagar(id); } else { try{ await comPrazo(fs.deleteDoc(fs.doc(SYNC.col,id)),15000,'tempo esgotado ao apagar '+id); }catch(e){ await restApagar(id); } } }
+    if(ops.length){ ULT_OK=new Date().toISOString(); try{ localStorage.setItem('painel-ult-envio',ULT_OK); }catch(e){} }
     SYNC.erro=''; SYNC.erroPush=grandes.length?('Documento grande demais para o Firestore: '+grandes.join(', ')+'. O restante foi enviado.'):''; statusSync(); if(typeof renderSyncBar==='function') try{ renderSyncBar(); }catch(_){}
-  }catch(e){ SYNC.erroPush=msgFB(e); statusSync(); if(typeof renderSyncBar==='function') try{ renderSyncBar(); }catch(_){}
-    clearTimeout(pushT); pushT=setTimeout(()=>{ if(SYNC.on) empurrar(); },20000); }
+  }catch(e){
+    if(ehCota(e)){
+      SYNC.cotaAte=proximoResetCota().getTime(); SYNC.erroPush=textoCota();
+      clearTimeout(pushT); pushT=setTimeout(()=>{ SYNC.cotaAte=0; if(SYNC.on) empurrar(); }, Math.max(60000, SYNC.cotaAte-Date.now()+30000));
+    } else {
+      SYNC.erroPush=msgFB(e); anotarErro(SYNC.erroPush);
+      clearTimeout(pushT); pushT=setTimeout(()=>{ if(SYNC.on) empurrar(); },30000);
+    }
+    statusSync(); if(typeof renderSyncBar==='function') try{ renderSyncBar(); }catch(_){}
+  }
   finally{ pushPend=false; }
 }
 const REGRAS_SIMPLES=`rules_version = '2';
@@ -2932,7 +2989,7 @@ service cloud.firestore {
 }`;
 function cfgSyncHTML(){
   const c=syncCfg()||{};
-  return `<div class="cnt" style="text-align:right;margin-bottom:6px">versão do painel: <b>${VERSAO}</b></div>
+  return `<div class="cnt" style="text-align:right;margin-bottom:6px">versão do painel: <b>${VERSAO}</b> · gravações hoje: <b>${gravHoje().toLocaleString('pt-BR')}</b> de ${COTA_DIA.toLocaleString('pt-BR')}</div>
   <div class="note">Para a equipe ver as alterações ao mesmo tempo, o painel usa o <b>Firebase (Firestore)</b> — plano gratuito. O passo a passo completo está no arquivo de instruções que acompanha o painel.</div>
   <div class="fld"><label>Configuração do Firebase (cole o bloco <b>firebaseConfig</b> do console)</label>
     <textarea id="fbCfg" style="min-height:130px;font-family:ui-monospace,Consolas,monospace;font-size:12px" placeholder='const firebaseConfig = {\n  apiKey: "AIza...",\n  authDomain: "seu-projeto.firebaseapp.com",\n  projectId: "seu-projeto",\n  appId: "1:123...:web:abc..."\n};'>${c.projectId?esc(JSON.stringify(c,null,1)):''}</textarea></div>
@@ -2947,6 +3004,17 @@ function cfgSyncHTML(){
     <div class="fld" style="margin-top:10px;max-width:320px"><label>Domínio técnico das contas</label><input id="fbDom" value="${esc((syncCfg()||{}).dominio||DOM_PADRAO)}"></div>
     <label class="chk" style="margin-top:10px"><input type="checkbox" data-c="fblp" ${(syncCfg()||{}).longPolling===false?'':'checked'}> Modo compatível com redes corporativas <span class="cnt">(recomendado na rede do TJES — usa conexão simples em vez de streaming, que muitos proxies cortam e deixam as gravações penduradas)</span></label></div>
   <div class="note" style="margin-top:12px;background:var(--warn-soft)">⚠ A configuração do Firebase fica dentro da página publicada — isso é normal e inevitável em qualquer site com Firebase. Quem protege os dados são as <b>regras acima</b>: só quem está em <b>Autorizações</b> lê ou grava alguma coisa. Uma conta criada por fora existe, mas não enxerga nada. Ainda assim, trate o link como confidencial, use senhas fortes e, para uso definitivo, avalie hospedar dentro da estrutura do TJES.</div>
+  <div class="cfgsec" style="margin-top:12px"><h4>Saúde da sincronização</h4>
+    <table><tbody>
+      <tr><td style="width:190px">Situação</td><td><b>${SYNC.on?(SYNC.viaRest?'sincronizado (via direta)':'sincronizado'):(syncCfg()&&syncCfg().projectId?'sem conexão':'só neste navegador')}</b></td></tr>
+      <tr><td>Tipo de conexão</td><td>${esc(SYNC.transporte||'—')}</td></tr>
+      <tr><td>Último envio aceito</td><td>${ULT_OK?new Date(ULT_OK).toLocaleString('pt-BR'):'—'}</td></tr>
+      <tr><td>Alterações na fila</td><td>${PEND.size}</td></tr>
+      <tr><td>Gravações hoje</td><td>${gravHoje().toLocaleString('pt-BR')} de ${COTA_DIA.toLocaleString('pt-BR')} <span class="cnt">(o painel pausa sozinho em ${LIM_DIA.toLocaleString('pt-BR')}, por segurança)</span></td></tr>
+      <tr><td>Salvamento neste navegador</td><td>${storageOK?'ok':'<b style="color:var(--crit-ink)">com problema</b>'}</td></tr>
+    </tbody></table>
+    ${ERROS_SYNC.length?`<div class="hint" style="margin-top:8px">Últimas falhas: ${ERROS_SYNC.slice(0,3).map(x=>`${new Date(x.ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})} — ${esc(x.m)}`).join('<br>')}</div>`:''}
+  </div>
   <div class="cfgsec" style="margin-top:12px"><h4>Publicar para a equipe</h4><div class="hint">Depois de conectar, use <b>Ferramentas → Baixar painel atualizado</b>: o arquivo baixado já sai com esta configuração embutida. Renomeie para <b>index.html</b> e envie ao GitHub Pages — quem abrir o site já cai direto na tela de login, conectado ao banco.</div></div>`;
 }
 
