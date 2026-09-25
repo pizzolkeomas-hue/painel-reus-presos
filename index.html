@@ -536,7 +536,7 @@ body.foco .kpis,body.foco .agenda,body.foco .panels,body.foco #bkBar{display:non
 <script>
 const PAGINA = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
 const CHAVE = 'painel-reus-presos-2vara-afonso-claudio';
-const VERSAO='v27 · 24/09/2026';
+const VERSAO='v28 · 24/09/2026';
 const HOJE = new Date(); HOJE.setHours(0,0,0,0);
 const DIA = 864e5;
 const iso = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
@@ -1583,6 +1583,8 @@ function abrirCfg(tab){
         <div class="mfoot"><button class="btn" id="lpN">Depois</button><button class="btn pri" id="lpR">Recarregar agora</button></div>`);
       dlgBody.querySelector('#lpN').onclick=()=>dlg.close();
       dlgBody.querySelector('#lpR').onclick=()=>location.reload(); return; }
+    if(b0&&b0.dataset.c==='syrest'){ ligarViaRest(!viaRestLigada()); abrirCfg('sync');
+      toast(viaRestLigada()?'Via direta ligada — as gravações passam a ir por HTTPS simples.':'Via direta desligada.'); if(SYNC.on) empurrar(); return; }
     if(b0&&b0.dataset.c==='sysimp'){ try{ await navigator.clipboard.writeText(REGRAS_SIMPLES); toast('Regras simples copiadas. Publique no Firestore e veja se a fila zera.'); }catch(e){ toast('Não consegui copiar — selecione o texto à mão.'); } return; }
     if(b0&&b0.dataset.c==='sydiag'){ dlg.onclose=null; await diagnosticoSync(); return; }
     if(b0&&b0.dataset.c==='sycopy'){ const c=syncCfg(); if(!c||!c.projectId){ toast('Ainda não há configuração salva neste painel.'); return; }
@@ -2533,7 +2535,7 @@ const PEND_KEY='painel-pendentes';
 const PEND=new Set();      /* documentos alterados aqui e ainda não confirmados pelo servidor */
 try{ (JSON.parse(localStorage.getItem(PEND_KEY)||'[]')||[]).forEach(x=>PEND.add(x)); }catch(e){}
 function salvarPend(){ try{ localStorage.setItem(PEND_KEY,JSON.stringify([...PEND].slice(-3000))); }catch(e){} }
-const SYNC={on:false,fs:null,db:null,col:null,erro:'',erroPush:'',aplicando:false,unsub:null,auth:null,mod:null,dbApp:null};
+const SYNC={on:false,viaRest:false,transporte:'',ultimaLeitura:'',fs:null,db:null,col:null,erro:'',erroPush:'',aplicando:false,unsub:null,auth:null,mod:null,dbApp:null};
 const SB={};
 function cfgEmbutida(){ try{ const el=document.getElementById('syncCfgEmb'); const v=el&&JSON.parse(el.textContent||'null'); return (v&&v.projectId)?v:null; }catch(e){ return null; } }
 function syncCfg(){
@@ -2567,13 +2569,15 @@ async function prepararFirebase(){
   SYNC.mod={app,auth,fs}; SYNC.auth=auth.getAuth(a); SYNC.dbApp=a;
   /* Conexão tolerante a proxy: o padrão do Firestore usa streaming, que várias
      redes corporativas cortam — as gravações ficam penduradas para sempre. */
+  SYNC.transporte='padrão';
   try{
     if(fs.initializeFirestore){
-      const o = (c.longPolling===false) ? {experimentalAutoDetectLongPolling:true,useFetchStreams:false}
-                                        : {experimentalForceLongPolling:true,useFetchStreams:false};
+      const o = (c.longPolling===false) ? {experimentalAutoDetectLongPolling:true}
+                                        : {experimentalForceLongPolling:true};
       SYNC.db = fs.initializeFirestore(a,o);
+      SYNC.transporte = (c.longPolling===false)?'detecção automática':'long polling';
     }
-  }catch(e){ SYNC.db=null; }
+  }catch(e){ SYNC.db=null; SYNC.transporte='padrão (não consegui trocar: '+((e&&e.message)||e)+')'; }
   if(!SYNC.db){ try{ SYNC.db=fs.getFirestore(a); }catch(e){} }
   try{ await auth.setPersistence(SYNC.auth,auth.browserLocalPersistence); }catch(e){}
   return SYNC;
@@ -2640,6 +2644,81 @@ async function criarContaUI(login,nomePessoa){
   dlgBody.querySelector('#ccCopia').onclick=async()=>{ try{ await navigator.clipboard.writeText(`Painel de Réus Presos\nEndereço: ${location.origin+location.pathname}\nLogin: ${login}\nSenha provisória: ${senha}`); toast('Dados copiados.'); }catch(e){} };
   return true;
 }
+/* ---------- via direta: API REST do Firestore por HTTPS simples ---------- */
+const REST_KEY='painel-via-direta';
+function viaRestLigada(){ try{ return localStorage.getItem(REST_KEY)==='1'; }catch(e){ return false; } }
+function ligarViaRest(v){ try{ v?localStorage.setItem(REST_KEY,'1'):localStorage.removeItem(REST_KEY); }catch(e){} SYNC.viaRest=!!v; }
+function fsVal(v){
+  if(v===null||v===undefined) return {nullValue:null};
+  if(typeof v==='boolean') return {booleanValue:v};
+  if(typeof v==='number') return Number.isInteger(v)?{integerValue:String(v)}:{doubleValue:v};
+  if(typeof v==='string') return {stringValue:v};
+  if(Array.isArray(v)) return {arrayValue: v.length?{values:v.map(fsVal)}:{}};
+  if(typeof v==='object'){ const f={}; Object.keys(v).forEach(k=>{ f[k]=fsVal(v[k]); }); return {mapValue:{fields:f}}; }
+  return {stringValue:String(v)};
+}
+function fsParse(v){
+  if(!v||typeof v!=='object') return null;
+  if('nullValue' in v) return null;
+  if('booleanValue' in v) return !!v.booleanValue;
+  if('integerValue' in v) return Number(v.integerValue);
+  if('doubleValue' in v) return Number(v.doubleValue);
+  if('stringValue' in v) return v.stringValue;
+  if('timestampValue' in v) return v.timestampValue;
+  if('arrayValue' in v) return (v.arrayValue&&v.arrayValue.values?v.arrayValue.values:[]).map(fsParse);
+  if('mapValue' in v){ const o={}, f=(v.mapValue&&v.mapValue.fields)||{}; Object.keys(f).forEach(k=>o[k]=fsParse(f[k])); return o; }
+  return null;
+}
+function restBase(){ const c=syncCfg()||{}; return 'https://firestore.googleapis.com/v1/projects/'+c.projectId+'/databases/(default)/documents'; }
+async function restToken(){
+  const u=SYNC.auth&&SYNC.auth.currentUser; if(!u) throw new Error('Sessão não autenticada.');
+  return await u.getIdToken();
+}
+async function restFetch(url,opt,ms,oque){
+  const tk=await restToken();
+  const o=Object.assign({},opt||{});
+  o.headers=Object.assign({'Content-Type':'application/json','Authorization':'Bearer '+tk},o.headers||{});
+  const r=await comPrazo(fetch(url,o),ms||20000,'tempo esgotado '+(oque||''));
+  if(!r.ok){ let m=''; try{ const j=await r.json(); m=(j.error&&(j.error.status+': '+j.error.message))||''; }catch(e){}
+    throw new Error('HTTP '+r.status+(m?' — '+m:'')+(oque?' ('+oque+')':'')); }
+  return r.status===204?null:r.json();
+}
+async function restGravar(docid,body){
+  const limpo=JSON.parse(JSON.stringify(body));
+  await restFetch(restBase()+'/painel/'+encodeURIComponent(docid),
+    {method:'PATCH',body:JSON.stringify({fields:fsVal(limpo).mapValue.fields})},20000,'ao gravar '+docid);
+}
+async function restApagar(docid){
+  try{ await restFetch(restBase()+'/painel/'+encodeURIComponent(docid),{method:'DELETE'},15000,'ao apagar '+docid); }catch(e){}
+}
+async function restLerTudo(){
+  const linhas=[]; let tok='';
+  for(let i=0;i<12;i++){
+    const j=await restFetch(restBase()+'/painel?pageSize=300'+(tok?'&pageToken='+encodeURIComponent(tok):''),{},25000,'ao ler o banco');
+    (j.documents||[]).forEach(dc=>{ const id=dc.name.split('/').pop(); const f=dc.fields||{};
+      linhas.push({id,data:f.d?fsParse(f.d):null,em:f.em?fsParse(f.em):''}); });
+    tok=j.nextPageToken||''; if(!tok) break;
+  }
+  return linhas;
+}
+async function restNovidades(desde){
+  const q={structuredQuery:{from:[{collectionId:'painel'}],
+    where:{fieldFilter:{field:{fieldPath:'em'},op:'GREATER_THAN',value:{stringValue:desde}}},limit:300}};
+  const j=await restFetch(restBase()+':runQuery',{method:'POST',body:JSON.stringify(q)},25000,'ao buscar novidades');
+  const linhas=[];
+  (Array.isArray(j)?j:[]).forEach(x=>{ if(!x.document) return; const id=x.document.name.split('/').pop(); const f=x.document.fields||{};
+    linhas.push({id,data:f.d?fsParse(f.d):null,em:f.em?fsParse(f.em):''}); });
+  return linhas;
+}
+/* grava um documento: SDK e, se falhar, via direta (adotando-a daí em diante) */
+async function gravarDoc(docid,body){
+  if(SYNC.viaRest) return restGravar(docid,body);
+  try{ await comPrazo(SYNC.fs.setDoc(SYNC.fs.doc(SYNC.col,docid),body),12000,'tempo esgotado ao gravar '+docid); }
+  catch(e){
+    await restGravar(docid,body);
+    if(!SYNC.viaRest){ ligarViaRest(true); toast('A gravação normal não passou nesta rede. O painel mudou para a via direta e vai continuar por ela.'); }
+  }
+}
 function esperarAuth(){
   return new Promise(res=>{
     const {auth}=SYNC.mod;
@@ -2662,7 +2741,8 @@ async function iniciarSync(mostrarErro){
     SYNC.fs=fs; SYNC.db=db; SYNC.col=fs.collection(db,'painel');
     const snap=await comPrazo(fs.getDocs(SYNC.col),15000,'A leitura do banco demorou demais. Verifique a internet ou a liberação da rede do TJES.');
     const linhas=[]; snap.forEach(d=>linhas.push({id:d.id,data:d.data().d}));
-    SYNC.on=true; SYNC.erro='';
+    SYNC.on=true; SYNC.erro=''; SYNC.viaRest=viaRestLigada();
+    SYNC.ultimaLeitura=new Date().toISOString();
     /* Se este navegador ainda está com os dados que vieram dentro do arquivo (nunca foi usado aqui)
        e o banco da equipe já tem processos, o banco manda: evita ressuscitar processos apagados. */
     if(dadosDeFabrica() && linhas.some(l=>l.id.startsWith('r_') && l.data)){
@@ -2709,13 +2789,16 @@ async function diagnosticoSync(){
   catch(e){ add('Ler o banco da equipe',false,erro(e)); return; }
   let temAut=false; snap.forEach(d=>{ if(d.id==='autorizados') temAut=true; });
   add('Lista de autorizados no banco',temAut,temAut?acl().logins.map(a=>a.u).join(', '):'O documento painel/autorizados ainda não subiu. Ele é criado no primeiro envio.');
-  try{ await comPrazo(fs.setDoc(fs.doc(col,'_diagnostico'),{d:{t:new Date().toISOString()},por:EU,em:new Date().toISOString()}),20000,'sem resposta em 20 s');
-       add('Gravar no banco da equipe',true,'gravação de teste aceita'); }
-  catch(e){ const m=erro(e);
-    add('Gravar no banco da equipe',false,m+(/tempo|deadline|esgotad/i.test(m)?' → o servidor não respondeu. Isso costuma ser a REGRA do Firestore travando a gravação: publique as “regras simples (teste)” logo abaixo e tente de novo.':(/permission|insufficient/i.test(m)?' → a regra do Firestore recusou. Copie as regras em Sincronização e publique de novo.':'')));
-    return; }
-  try{ await comPrazo(fs.deleteDoc(fs.doc(col,'_diagnostico')),20000,'sem resposta em 20 s'); add('Apagar no banco da equipe',true,'limpeza do teste ok'); }
-  catch(e){ add('Apagar no banco da equipe',false,erro(e)); }
+  add('Tipo de conexão',true,SYNC.transporte+(SYNC.viaRest?' · gravando pela VIA DIRETA (HTTPS)':' · gravando pelo modo normal'));
+  let okSdk=false;
+  try{ await comPrazo(fs.setDoc(fs.doc(col,'_diagnostico'),{d:{t:new Date().toISOString()},por:EU,em:new Date().toISOString()}),15000,'sem resposta em 15 s');
+       okSdk=true; add('Gravar — modo normal',true,'aceito'); }
+  catch(e){ add('Gravar — modo normal',false,erro(e)); }
+  try{ await restGravar('_diagnostico',{d:{t:new Date().toISOString(),via:'rest'},por:EU,em:new Date().toISOString()});
+       add('Gravar — via direta (HTTPS)',true,'aceito'+(okSdk?'':' → o painel vai passar a usar esta via')); if(!okSdk) ligarViaRest(true); }
+  catch(e){ add('Gravar — via direta (HTTPS)',false,erro(e)); }
+  try{
+    await restApagar('_diagnostico'); add('Limpeza do teste',true,'ok'); }catch(e){ add('Limpeza do teste',false,erro(e)); }
   try{ const tam=id=>{ try{ return Math.round(JSON.stringify(id).length/1024); }catch(e){ return 0; } };
     add('Tamanho dos dados',true,`processos: ${tam(DB.registros)} KB · registro de movimentações: ${tam(DB.log)} KB (${(DB.log||[]).length} lançamentos) · chat: ${tam(DB.chat)} KB · lixeira: ${tam(DB.lixeira)} KB`);
   }catch(e){}
@@ -2724,7 +2807,8 @@ async function diagnosticoSync(){
 }
 function statusSync(){
   const el=document.getElementById('syncInd'); if(!el) return;
-  el.innerHTML = (SYNC.on&&SYNC.erroPush)?`<span class="pill venc" title="${esc(SYNC.erroPush)}">● ${PEND.size} a enviar</span>`
+  el.innerHTML = (SYNC.on&&!SYNC.erroPush&&SYNC.viaRest)?`<span class="pill real" title="Gravando por HTTPS simples (via direta)">● sincronizado (via direta)</span>`
+    : (SYNC.on&&SYNC.erroPush)?`<span class="pill venc" title="${esc(SYNC.erroPush)}">● ${PEND.size} a enviar</span>`
     : SYNC.on?`<span class="pill real" title="As alterações aparecem para toda a equipe">● sincronizado</span>`
     : SYNC.erro?`<span class="pill venc" title="${esc(SYNC.erro)}">● sem sincronizar</span>`
     : `<span class="pill ama" title="Clique para ligar o painel ao banco da equipe">● só neste navegador</span>`;
@@ -2806,23 +2890,25 @@ async function empurrar(){
       const lote=ops.slice(i,i+10);
       const b=fs.writeBatch(SYNC.db||SYNC.col.firestore);
       lote.forEach(([,docid,body])=>b.set(fs.doc(SYNC.col,docid),body));
-      let okLote=false;
-      try{ await comPrazo(b.commit(),20000,'tempo esgotado no lote'); okLote=true; lote.forEach(([id])=>PEND.delete(id)); salvarPend(); }
-      catch(err){
-        /* o lote falhou: tenta um a um, para pelo menos passar o que dá e identificar o problema */
-        let ultimo=err, passou=0;
+      let feito=false;
+      if(!SYNC.viaRest){
+        try{ await comPrazo(b.commit(),18000,'tempo esgotado no lote'); feito=true; lote.forEach(([id])=>PEND.delete(id)); salvarPend(); }
+        catch(err){ /* cai para documento a documento, e daí para a via direta */ }
+      }
+      if(!feito){
+        let ultimo=null, passou=0;
         for(const [id,docid,body] of lote){
-          try{ await comPrazo(fs.setDoc(fs.doc(SYNC.col,docid),body),12000,'tempo esgotado ao gravar '+docid); PEND.delete(id); passou++; }
+          try{ await gravarDoc(docid,body); PEND.delete(id); passou++; }
           catch(e2){ ultimo=e2; delete SB[id]; }
         }
         salvarPend();
         if(passou<lote.length){
           const m=(ultimo&&ultimo.code)?msgFB(ultimo):((ultimo&&ultimo.message)||String(ultimo));
-          throw new Error(m+(/tempo esgotado/i.test(m)?' — o servidor não confirma a gravação. Quase sempre é a regra do Firestore: teste as “regras simples” em Ajustes → Sincronização.':''));
+          throw new Error(m);
         }
       }
     }
-    for(const id of del){ try{ await comPrazo(fs.deleteDoc(fs.doc(SYNC.col,id)),15000,'tempo esgotado ao apagar '+id); }catch(e){} }
+    for(const id of del){ if(SYNC.viaRest){ await restApagar(id); } else { try{ await comPrazo(fs.deleteDoc(fs.doc(SYNC.col,id)),15000,'tempo esgotado ao apagar '+id); }catch(e){ await restApagar(id); } } }
     SYNC.erro=''; SYNC.erroPush=grandes.length?('Documento grande demais para o Firestore: '+grandes.join(', ')+'. O restante foi enviado.'):''; statusSync(); if(typeof renderSyncBar==='function') try{ renderSyncBar(); }catch(_){}
   }catch(e){ SYNC.erroPush=msgFB(e); statusSync(); if(typeof renderSyncBar==='function') try{ renderSyncBar(); }catch(_){}
     clearTimeout(pushT); pushT=setTimeout(()=>{ if(SYNC.on) empurrar(); },20000); }
@@ -2850,7 +2936,7 @@ function cfgSyncHTML(){
   <div class="note">Para a equipe ver as alterações ao mesmo tempo, o painel usa o <b>Firebase (Firestore)</b> — plano gratuito. O passo a passo completo está no arquivo de instruções que acompanha o painel.</div>
   <div class="fld"><label>Configuração do Firebase (cole o bloco <b>firebaseConfig</b> do console)</label>
     <textarea id="fbCfg" style="min-height:130px;font-family:ui-monospace,Consolas,monospace;font-size:12px" placeholder='const firebaseConfig = {\n  apiKey: "AIza...",\n  authDomain: "seu-projeto.firebaseapp.com",\n  projectId: "seu-projeto",\n  appId: "1:123...:web:abc..."\n};'>${c.projectId?esc(JSON.stringify(c,null,1)):''}</textarea></div>
-  <div class="acts" style="margin-top:10px"><button class="btn pri" data-c="syok">Salvar e conectar</button><button class="btn" data-c="sydiag" title="Descobrir exatamente o que está falhando">🩺 Testar conexão e permissões</button><button class="btn" data-c="sycopy" title="Copiar para colar em outro painel">⧉ Copiar configuração</button><button class="btn" data-c="sydesc">Desconectar</button><span id="syMsg" class="cnt"></span></div>
+  <div class="acts" style="margin-top:10px"><button class="btn pri" data-c="syok">Salvar e conectar</button><button class="btn" data-c="sydiag" title="Descobrir exatamente o que está falhando">🩺 Testar conexão e permissões</button><button class="btn" data-c="syrest" title="Gravar por HTTPS simples, sem o canal do Firebase">${viaRestLigada()?'✓ via direta ligada':'⚡ Usar via direta'}</button><button class="btn" data-c="sycopy" title="Copiar para colar em outro painel">⧉ Copiar configuração</button><button class="btn" data-c="sydesc">Desconectar</button><span id="syMsg" class="cnt"></span></div>
   <div class="cfgsec" style="margin-top:14px"><h4>Regras do Firestore (cole em Firestore Database → Regras)</h4>
     <div class="note" style="background:var(--good-soft);margin-bottom:8px">Cole isto <b>uma única vez</b>. A partir daí, quem manda é a lista de <b>⚙ Ajustes → Autorizações</b>: autorizou alguém no painel, a pessoa entra. Não precisa mexer no Firebase de novo.</div>
     <textarea readonly id="fbRegras" style="min-height:250px;font-family:ui-monospace,Consolas,monospace;font-size:12px">${esc(regrasFirestore())}</textarea>
@@ -3377,6 +3463,18 @@ renderTudo(); indicador(); gravar(); estadoBase=estadoAtual(); btnHist(); render
     telaLogin('', (u&&aclUser(u))?u:'');
   }
 })();
+
+/* na via direta não há escuta em tempo real: busca novidades por HTTPS */
+async function puxarNovidades(){
+  if(!SYNC.on||!SYNC.viaRest||SYNC.aplicando||digitando()) return;
+  try{
+    const desde=SYNC.ultimaLeitura||new Date(Date.now()-864e5).toISOString();
+    const linhas=await restNovidades(desde);
+    SYNC.ultimaLeitura=new Date().toISOString();
+    if(linhas.length) aplicarLinhas(linhas.map(l=>({id:l.id,data:l.data})));
+  }catch(e){ /* silencioso: a próxima tentativa resolve */ }
+}
+setInterval(puxarNovidades,45000);
 
 /* reconecta sozinho quando a rede volta */
 setInterval(()=>{ if(LOGADO && !SYNC.on && !SYNC.aplicando){ const c=syncCfg(); if(c&&c.projectId&&SYNC.auth&&SYNC.auth.currentUser) iniciarSync(); } },45000);
