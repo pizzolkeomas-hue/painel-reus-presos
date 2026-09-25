@@ -536,7 +536,7 @@ body.foco .kpis,body.foco .agenda,body.foco .panels,body.foco #bkBar{display:non
 <script>
 const PAGINA = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
 const CHAVE = 'painel-reus-presos-2vara-afonso-claudio';
-const VERSAO='v26 · 24/09/2026';
+const VERSAO='v27 · 24/09/2026';
 const HOJE = new Date(); HOJE.setHours(0,0,0,0);
 const DIA = 864e5;
 const iso = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
@@ -2716,6 +2716,9 @@ async function diagnosticoSync(){
     return; }
   try{ await comPrazo(fs.deleteDoc(fs.doc(col,'_diagnostico')),20000,'sem resposta em 20 s'); add('Apagar no banco da equipe',true,'limpeza do teste ok'); }
   catch(e){ add('Apagar no banco da equipe',false,erro(e)); }
+  try{ const tam=id=>{ try{ return Math.round(JSON.stringify(id).length/1024); }catch(e){ return 0; } };
+    add('Tamanho dos dados',true,`processos: ${tam(DB.registros)} KB · registro de movimentações: ${tam(DB.log)} KB (${(DB.log||[]).length} lançamentos) · chat: ${tam(DB.chat)} KB · lixeira: ${tam(DB.lixeira)} KB`);
+  }catch(e){}
   add('Alterações pendentes de envio',PEND.size===0,PEND.size?PEND.size+' documento(s) esperando — use “Tentar agora” na faixa vermelha do topo.':'nenhuma');
   add('Salvamento neste navegador',storageOK,storageOK?'ok':(erroGravar||'falhou'));
 }
@@ -2744,6 +2747,8 @@ function aplicarLinhas(rows,inicial){
     if(id==='config'&&d){ DB.config=d; SB[id]=s; mudou=true; }
     else if(id==='acl'&&d){ DB.acl=d; SB[id]=s; mudou=true; }
     else if(id==='lixeira'&&d){ DB.lixeira=d.itens||[]; SB[id]=s; mudou=true; }
+    else if(id.startsWith('lixeira_')&&d){ const ids=new Set((DB.lixeira||[]).map(x=>x&&x.r&&x.r.id));
+      (d.itens||[]).forEach(x=>{ if(x&&x.r&&!ids.has(x.r.id)){ (DB.lixeira=DB.lixeira||[]).push(x); mudou=true; } }); SB[id]=s; }
     else if(id==='autorizados'){ SB[id]=s; }   /* lista derivada da ACL — só serve para as regras do Firestore */
     else if(id==='avisos'&&d){ DB.avisos=DB.avisos||[];
       (d.itens||[]).forEach(a=>{ const ex=DB.avisos.find(x=>x.id===a.id);
@@ -2773,14 +2778,26 @@ async function empurrar(){
   const fs=SYNC.fs;
   try{
     const ops=[], del=[];
-    const põe=(id,data)=>{ const s=JSON.stringify(data); if(SB[id]===s) return; SB[id]=s; PEND.add(id); salvarPend(); ops.push([id,docId(id),{d:data,por:EU,em:new Date().toISOString()}]); };
+    const LIM_DOC=600000;   /* o Firestore recusa documentos acima de 1 MB; ficamos bem abaixo */
+    const grandes=[];
+    const põe=(id,data)=>{ const s=JSON.stringify(data);
+      if(s.length>LIM_DOC){ grandes.push(id+' ('+Math.round(s.length/1024)+' KB)'); delete SB[id]; PEND.delete(id); return; }
+      if(SB[id]===s) return; SB[id]=s; PEND.add(id); salvarPend(); ops.push([id,docId(id),{d:data,por:EU,em:new Date().toISOString()}]); };
     DB.registros.forEach(r=>põe('r_'+r.id,r));
     Object.keys(SB).forEach(id=>{ if(id.startsWith('r_')&&!byId(id.slice(2))){ delete SB[id]; del.push(docId(id)); } });
-    põe('config',DB.config); põe('acl',DB.acl); põe('lixeira',{itens:DB.lixeira}); põe('avisos',{itens:(DB.avisos||[]).slice(-500)}); põe('autorizados',{emails:acl().logins.map(a=>emailDe(a.u))});
+    põe('config',DB.config); põe('acl',DB.acl);
+    { const lx=(DB.lixeira||[]).slice(-60); for(let i=0;i<Math.max(1,Math.ceil(lx.length/15));i++) põe('lixeira_'+String(i).padStart(2,'0'),{itens:lx.slice(i*15,i*15+15)}); } põe('avisos',{itens:(DB.avisos||[]).slice(-500)}); põe('autorizados',{emails:acl().logins.map(a=>emailDe(a.u))});
     DB.chat.slice(-400).forEach(m=>põe('chat_'+m.id,m));
     Object.keys(SB).forEach(id=>{ if(id.startsWith('chat_')&&!DB.chat.some(m=>m.id===id.slice(5))){ delete SB[id]; del.push(docId(id)); } });
-    const porMes={}; DB.log.slice(-1500).forEach(e=>{ (porMes[mesLog(e)]=porMes[mesLog(e)]||[]).push(e); });
-    Object.entries(porMes).forEach(([k,v])=>põe(k,{itens:v}));
+    /* registro de movimentações: pedaços de 150 lançamentos, nomeados de forma estável */
+    const porMes={}; DB.log.forEach(e=>{ const k=mesLog(e); (porMes[k]=porMes[k]||[]).push(e); });
+    const meses=Object.keys(porMes).sort().slice(-3), idsLog=new Set();
+    meses.forEach(k=>{ const arr=porMes[k];
+      for(let i=0;i<arr.length;i+=150){ const id=k+'_'+String(Math.floor(i/150)).padStart(3,'0'); idsLog.add(id); põe(id,{itens:arr.slice(i,i+150)}); } });
+    /* apaga do banco os documentos de registro do formato antigo (um por mês, grande demais) */
+    Object.keys(SB).forEach(id=>{ if(/^log_\d{4}-\d{2}$/.test(id)){ delete SB[id]; PEND.delete(id); del.push(docId(id)); } });
+    [...PEND].forEach(id=>{ if(/^log_\d{4}-\d{2}$/.test(id)){ PEND.delete(id); } });
+    salvarPend();
     /* lotes pequenos: as regras do Firestore consultam um documento a cada gravação
        e há limite de consultas por lote. */
     /* lotes pequenos: as regras do Firestore consultam um documento a cada gravação
@@ -2805,8 +2822,8 @@ async function empurrar(){
         }
       }
     }
-    for(const id of del) await comPrazo(fs.deleteDoc(fs.doc(SYNC.col,id)),20000,'Não consegui apagar um registro no banco.');
-    SYNC.erro=''; SYNC.erroPush=''; statusSync(); if(typeof renderSyncBar==='function') try{ renderSyncBar(); }catch(_){}
+    for(const id of del){ try{ await comPrazo(fs.deleteDoc(fs.doc(SYNC.col,id)),15000,'tempo esgotado ao apagar '+id); }catch(e){} }
+    SYNC.erro=''; SYNC.erroPush=grandes.length?('Documento grande demais para o Firestore: '+grandes.join(', ')+'. O restante foi enviado.'):''; statusSync(); if(typeof renderSyncBar==='function') try{ renderSyncBar(); }catch(_){}
   }catch(e){ SYNC.erroPush=msgFB(e); statusSync(); if(typeof renderSyncBar==='function') try{ renderSyncBar(); }catch(_){}
     clearTimeout(pushT); pushT=setTimeout(()=>{ if(SYNC.on) empurrar(); },20000); }
   finally{ pushPend=false; }
