@@ -528,11 +528,11 @@ body.foco .kpis,body.foco .agenda,body.foco .panels,body.foco #bkBar{display:non
 <input type="file" id="fileImp" accept=".json,application/json" class="hidden">
 <input type="file" id="fileXls" accept=".xlsx,.xlsm,.xls" class="hidden">
 
-<script id="dados" type="application/json">{"versao": 6, "salvoEm": "1970-01-01T00:00:00.000Z", "registros": []}</script>
+<script id="dados" type="application/json">{"versao": 7, "salvoEm": "1970-01-01T00:00:00.000Z", "registros": []}</script>
 <script>
 const PAGINA = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
 const CHAVE = 'painel-reus-presos-2vara-afonso-claudio';
-const VERSAO='v31 · 07/10/2026';
+const VERSAO='v32 · 07/10/2026';
 const HOJE = new Date(); HOJE.setHours(0,0,0,0);
 const DIA = 864e5;
 const iso = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
@@ -639,6 +639,10 @@ MODELOS_PADRAO.push(
 
 const PLACEHOLDERS=['processo','reus','reu_principal','tipos_penais','data_prisao','dias_preso','ultima_revisao','proxima_revisao','data_aij','fatos','diligencias','reincidencia','status','localizacao','hoje','hoje_extenso','ano','vara','comarca','uf','juiz'];
 
+const LOC_OFICIAL=['CARTÓRIO','GABINETE'];
+const STATUS_OFICIAL=['AIJ DESIGNADA','AGUARDANDO PRAZO','AGUARDANDO JÚRI','MINUTAR','MINUTADO',
+  'AG CUMPRIMENTO DE MANDADO','AGUARDANDO DENÚNCIA','JÚRI DESIGNADO','ATO JUDICIAL PROFERIDO','ANALISAR'];
+const REINC_OFICIAL=['Primário','Tecnicamente Primário','Reincidente','Reincidente Específico'];
 const PAL=['#2a78d6','#eb6834','#1baf7a','#eda100','#d55181','#008300','#6a4fc7','#e34948','#7d7b74'];
 
 /* ---------- dados + migração ---------- */
@@ -731,7 +735,16 @@ function migrar(db){
     (db.log||[]).forEach(e=>{ if(/inclu/i.test(e.acao||'') && e.rid && !inc[e.rid]) inc[e.rid]=e.ts; });
     db.registros.forEach(r=>{ if(!r.criadoEm && inc[r.id]) r.criadoEm=inc[r.id]; });
   }
-  db.versao = 6;
+  /* listas de localização, status e reincidência: enxugadas para as oficiais ------ */
+  if((db.versao||1)<7){
+    const renomeia=(l,de,para)=>{ const o=(db.config.listas[l]||[]).find(x=>x.v===de); if(o) o.v=para;
+      db.registros.forEach(r=>{ if(r[l]===de) r[l]=para; }); };
+    renomeia('status','AG. CUMP. MANDADO','AG CUMPRIMENTO DE MANDADO');
+    const fixa=(l,vals)=>{ const atual=db.config.listas[l]||[];
+      db.config.listas[l]=vals.map((v,i)=>{ const o=atual.find(x=>norm(x.v)===norm(v)); return {v,cor:o?o.cor:PAL[i%PAL.length]}; }); };
+    fixa('loc',LOC_OFICIAL); fixa('status',STATUS_OFICIAL); fixa('reinc',REINC_OFICIAL);
+  }
+  db.versao = 7;
   return db;
 }
 function tipoInfo(nome,db=DB){ const n=norm(nome); return TIPOS_BASE.find(t=>norm(t.v)===n) || (db&&db.config&&db.config.tiposExtra||[]).find(t=>norm(t.v)===n) || null; }
@@ -1482,6 +1495,31 @@ document.getElementById('btnFoco').onclick=toggleFoco;
 document.getElementById('btnSair').onclick=sair;
 document.getElementById('btnTopo').onclick=()=>scrollTo({top:0,behavior:'smooth'});
 let cfgModeloSel=null;
+/* Remove uma opção da lista. Se houver processos usando, pergunta por qual
+   trocar (ou deixar em branco) e atualiza todos de uma vez. */
+function removerOpcao(l,i,tab){
+  const lista=DB.config.listas[l]; const o=lista&&lista[i]; if(!o) return;
+  const multi=(l==='etiquetas'||l==='triagem');
+  const usados=DB.registros.filter(r=> multi ? (r[l]||[]).includes(o.v) : r[l]===o.v );
+  if(!usados.length){ lista.splice(i,1); salvar(); abrirCfg(tab); toast(`“${o.v}” removida da lista.`); return; }
+  const outras=lista.filter((x,j)=>j!==i);
+  abrirDialogo(`<h3>Remover “${esc(o.v)}” de ${LNOME[l].toLowerCase()}?</h3>
+   <div class="msub"><b>${usados.length} processo(s)</b> usam esta opção hoje. Escolha o que fazer com eles — a remoção vale para toda a equipe.</div>
+   <div class="fld"><label>Nesses processos, trocar por</label>
+     <select id="rmSub"><option value="">(deixar em branco)</option>${outras.map(x=>`<option value="${esc(x.v)}">${esc(x.v)}</option>`).join('')}</select></div>
+   <div class="cfgsec" style="margin-top:10px"><h4>Processos afetados${usados.length>12?' — 12 primeiros de '+usados.length:''}</h4>
+     <div class="cnt" style="white-space:normal;line-height:1.75">${usados.slice(0,12).map(r=>esc(procPrinc(r))+' — '+esc(trunc(primeiroNome(r),34))).join('<br>')}</div></div>
+   <div class="note">Dá para desfazer com Ctrl+Z logo depois.</div>
+   <div class="mfoot"><button class="btn" id="rmC">Cancelar</button><button class="btn pri" id="rmO" style="background:var(--crit);border-color:var(--crit)">Remover</button></div>`);
+  dlg.onclose=()=>{ setTimeout(()=>{ if(!dlg.open) abrirCfg(tab); },10); };
+  dlgBody.querySelector('#rmC').onclick=()=>dlg.close();
+  dlgBody.querySelector('#rmO').onclick=()=>{
+    const novo=dlgBody.querySelector('#rmSub').value;
+    usados.forEach(r=>{ if(multi){ r[l]=(r[l]||[]).map(x=>x===o.v?novo:x).filter((x,j,a)=>x&&a.indexOf(x)===j); } else r[l]=novo; });
+    lista.splice(i,1); IDX=null; salvar(); auditar(); dlg.onclose=null; dlg.close(); renderTudo(); abrirCfg(tab);
+    toast(`“${o.v}” removida de ${usados.length} processo(s)${novo?` e trocada por “${novo}”`:''}.`,true);
+  };
+}
 function abrirCfg(tab){
   const A=AJ();
   const tabs=[['geral','Geral'],['aparencia','Aparência'],['equipe','Equipe e perfis'],['rev','Prazos e alertas'],['listas','Listas e cores'],['checklist','Checklist da AIJ'],['tipos','Tipos penais'],['modelos','Modelos de minuta'],['registro','Registro'],['qualidade','Qualidade dos dados'],['autorizacoes','Autorizações'],['sync','Sincronização']];
@@ -1638,11 +1676,12 @@ function abrirCfg(tab){
     const ph=e.target.closest('[data-ph]'); if(ph){ const ta=box.querySelector('#cmTexto'); const s=ta.selectionStart??ta.value.length; const ins=`{{${ph.dataset.ph}}}`; ta.value=ta.value.slice(0,s)+ins+ta.value.slice(ta.selectionEnd??s); ta.focus(); ta.selectionStart=ta.selectionEnd=s+ins.length; DB.config.modelos.find(x=>x.id===cfgModeloSel).texto=ta.value; salvar(); return; }
     const b=e.target.closest('[data-c]'); if(!b||b.tagName==='INPUT'||b.tagName==='SELECT') return;
     const c=b.dataset.c;
-    if(c==='del'){ const row=b.closest('[data-l]'); const l=row.dataset.l, o=DB.config.listas[l][+row.dataset.i];
-      const uso=DB.registros.filter(r=>(l==='etiquetas'||l==='triagem')?r[l].includes(o.v):r[l]===o.v).length;
-      if(uso){ toast(`“${o.v}” está em uso em ${uso} processo(s). Troque nesses processos antes de remover.`); return; }
-      DB.config.listas[l].splice(+row.dataset.i,1); salvar(); abrirCfg(tab); }
-    if(c==='add'){ const l=b.dataset.l; dlg.onclose=null; dlg.close(); await novaOpcao(l); abrirCfg(tab); }
+    if(c==='del'){ const row=b.closest('[data-l]'); removerOpcao(row.dataset.l,+row.dataset.i,tab); return; }
+    if(c==='add'){ const l=b.dataset.l; dlg.onclose=null; dlg.close();
+      /* o evento de fechamento chega no tique seguinte; sem esta pausa ele caía
+         sobre a caixa recém-aberta e a fechava na hora (＋ adicionar não funcionava). */
+      await new Promise(r=>setTimeout(r,0));
+      const v=await novaOpcao(l); abrirCfg(tab); if(v) toast(`“${v}” incluída em ${LNOME[l].toLowerCase()}.`); return; }
     if(c==='deltx'){ DB.config.tiposExtra.splice(+b.closest('[data-tx]').dataset.tx,1); salvar(); abrirCfg(tab); }
     if(c==='padd'){ const nome=box.querySelector('#npNome').value.trim(); let u=norm(box.querySelector('#npUser').value).toLowerCase().replace(/[^a-z0-9._-]/g,'');
       if(!nome){ toast('Informe o nome.'); return; } if(!u) u=norm(nome.split(' ')[0]).toLowerCase(); if(pessoa(u)){ toast('Esse usuário já existe.'); return; }
@@ -3539,7 +3578,9 @@ function aplicarImport(){
   if(!IMPDADOS) return;
   const res=preverImport(IMPDADOS.lidos, IMPOPS);
   let nu=0, nn=0;
-  const fixarListas=r=>{ ['loc','status','cump','reinc'].forEach(k=>garantirValorLista(k,r[k]));
+  /* a planilha não cria opções novas de localização/status/cumprimento/reincidência:
+     era isso que enchia as listas de valores soltos vindos das abas antigas. */
+  const fixarListas=r=>{
     (r.etiquetas||[]).forEach(v=>garantirValorLista('etiquetas',v));
     (r.triagem||[]).forEach(v=>garantirValorLista('triagem',v));
     (r.crimes||[]).forEach(c=>{ if(c && !tipoInfo(c)) DB.config.tiposExtra.push({v:c, g:grupoAuto(c)}); }); };
